@@ -1,0 +1,10 @@
+{
+	"name": "electrobun-native-ui",
+	"version": "1.0.0",
+	"type": "module",
+	"description": "Electrobun native UI: HTML/CSS/JSX rendered by the Zig UI core straight to the GPU — no webview",
+	"devDependencies": {
+		"@types/bun": "latest",
+		"typescript": "^5.7.2"
+	}
+}

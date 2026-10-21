@@ -100,6 +100,8 @@ pub const Event = struct {
     /// input text (input/beforeinput/composition)
     data: []const u8 = "",
     related: NodeId = null_id,
+    /// unique per dispatch (set by Interaction.dispatch)
+    serial: u32 = 0,
     default_prevented: bool = false,
     propagation_stopped: bool = false,
 
@@ -188,6 +190,7 @@ pub const Interaction = struct {
     /// selecting text with the mouse in a text control
     drag_select: NodeId = null_id,
     keyboard_focus: bool = false,
+    next_serial: u32 = 0,
     now: f64 = 0,
     /// time of the last caret movement (blink restarts)
     caret_time: f64 = 0,
@@ -243,6 +246,11 @@ pub const Interaction = struct {
     /// the default action was prevented.
     pub fn dispatch(ix: *Interaction, ev: *Event) bool {
         if (ev.target == null_id or ix.doc.get(ev.target) == null) return true;
+        if (ev.serial == 0) {
+            ix.next_serial +%= 1;
+            if (ix.next_serial == 0) ix.next_serial = 1;
+            ev.serial = ix.next_serial;
+        }
         if (ix.sink) |s| s(ix.sink_ctx, ev);
         // the propagation path is fixed before any listener runs (DOM semantics):
         // listeners may mutate or destroy the tree

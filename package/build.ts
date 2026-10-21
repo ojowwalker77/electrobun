@@ -710,6 +710,7 @@ async function build() {
 	await Promise.all([
 		buildSelfExtractor(),
 		buildCore(),
+		buildUI(),
 		buildLauncher(),
 		buildMainJs(),
 	]);
@@ -799,6 +800,9 @@ async function copyToDist() {
 				: "libElectrobunCore.so";
 	const coreLibSourceDir = OS === "win" ? "bin" : "lib";
 	cpSync(join("src", "core", "zig-out", coreLibSourceDir, coreLibName), join("dist", coreLibName), { force: true });
+	if (OS === "macos") {
+		cpSync(join("src", "ui-core", "zig-out", "lib", "libElectrobunUI.dylib"), join("dist", "libElectrobunUI.dylib"), { force: true });
+	}
 	// Copy bsdiff/bspatch from vendored zig-bsdiff
 	cpSync(`vendors/zig-bsdiff/bsdiff${binExt}`, `dist/bsdiff${binExt}`, { force: true });
 	cpSync(`vendors/zig-bsdiff/bspatch${binExt}`, `dist/bspatch${binExt}`, { force: true });
@@ -2608,6 +2612,18 @@ async function buildLauncher() {
 	}
 
 	await runZigBuild("launcher", zigArgs);
+}
+
+// The native UI core (src/ui-core) ships as its own library so webview-only
+// apps do not pay for it. Debug builds of the engine are too slow to be
+// useful, so dev builds still compile it optimized.
+async function buildUI() {
+	if (OS !== "macos") return; // TODO(ui-core): linux/windows hosts
+	console.log(`Building ElectrobunUI for ${OS} ${ARCH}...`);
+	const sdk = runCaptured("xcrun", ["--sdk", "macosx", "--show-sdk-path"]).trim();
+	const zigArgs = [`-Dtarget=${macosZigTarget(ARCH)}`, `-Dmacos-sdk=${sdk}`, `-Dtools=false`];
+	const optimize = CHANNEL === "release" ? "ReleaseSmall" : "ReleaseFast";
+	await $`cd src/ui-core && ../../vendors/zig/zig build -Doptimize=${optimize} ${zigArgs}`;
 }
 
 async function buildCore() {

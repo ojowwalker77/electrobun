@@ -18,6 +18,7 @@ pub const reactive = @import("reactive.zig");
 pub const template = @import("template.zig");
 pub const app = @import("app.zig");
 pub const capi = @import("capi.zig");
+pub const host_electrobun = @import("host/electrobun.zig");
 pub const Signal = app.Signal;
 pub const List = app.List;
 pub const mount = app.mount;

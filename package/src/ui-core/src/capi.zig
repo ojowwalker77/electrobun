@@ -25,6 +25,43 @@ const font = @import("text/font.zig");
 
 const gpa = std.heap.c_allocator;
 
+// ---------------------------------------------------------------------------
+// Locking: the app thread and the host's main thread share each UI.
+// ---------------------------------------------------------------------------
+
+var lock_owner = std.atomic.Value(u64).init(0);
+var lock_depth: u32 = 0;
+
+fn threadId() u64 {
+    return @as(u64, std.Thread.getCurrentId()) + 1;
+}
+
+/// Recursive lock around all UI state (exported for in-process hosts).
+pub fn lock() void {
+    const me = threadId();
+    if (lock_owner.load(.acquire) == me) {
+        lock_depth += 1;
+        return;
+    }
+    var spins: u32 = 0;
+    while (lock_owner.cmpxchgWeak(0, me, .acquire, .monotonic) != null) {
+        spins += 1;
+        if (spins > 64) std.Thread.yield() catch {} else std.atomic.spinLoopHint();
+    }
+    lock_depth = 1;
+}
+
+pub fn unlock() void {
+    lock_depth -= 1;
+    if (lock_depth == 0) {
+        // mutations from the app thread schedule a frame on the host
+        for (instances.items) |maybe| if (maybe) |inst| {
+            if (inst.request_frame) |f| if (inst.ui.doc.needs_paint or inst.ui.wantsFrames()) f(inst.request_frame_ctx);
+        };
+        lock_owner.store(0, .release);
+    }
+}
+
 pub const Instance = struct {
     ui: *ui_mod.Ui,
     rt: reactive.Runtime,
@@ -37,6 +74,12 @@ pub const Instance = struct {
     listeners: std.AutoHashMapUnmanaged(u64, u32) = .empty,
     wakeup: ?*const fn (ctx: ?*anyopaque) callconv(.c) void = null,
     wakeup_ctx: ?*anyopaque = null,
+    /// set by hosts that render this ui (electrobun host)
+    request_frame: ?*const fn (ctx: ?*anyopaque) void = null,
+    request_frame_ctx: ?*anyopaque = null,
+    id: u32 = 0,
+    event_serial: u32 = 0,
+    last_event: usize = 0,
     scratch: std.heap.ArenaAllocator,
     string_out: std.ArrayList(u8) = .empty,
 };
@@ -58,6 +101,8 @@ fn span(p: ?[*]const u8, len: usize) []const u8 {
 // ---------------------------------------------------------------------------
 
 export fn ebui_create() u32 {
+    lock();
+    defer unlock();
     if (instances.items.len == 0) instances.append(gpa, null) catch return 0;
     const ui = ui_mod.Ui.create(gpa, .{}) catch return 0;
     const inst = gpa.create(Instance) catch {
@@ -75,11 +120,14 @@ export fn ebui_create() u32 {
     ui.ix.sink = null;
     instances.append(gpa, inst) catch return 0;
     _ = html.ensureBody(ui.doc) catch {};
-    return @intCast(instances.items.len - 1);
+    inst.id = @intCast(instances.items.len - 1);
+    return inst.id;
 }
 
 /// Create with the deterministic mock font backend (tests, headless).
 export fn ebui_create_headless() u32 {
+    lock();
+    defer unlock();
     if (instances.items.len == 0) instances.append(gpa, null) catch return 0;
     const fonts = font.MockBackend.create(gpa) catch return 0;
     const ui = ui_mod.Ui.create(gpa, .{ .fonts = fonts }) catch return 0;
@@ -89,10 +137,13 @@ export fn ebui_create_headless() u32 {
     inst.mounter = .{ .gpa = gpa, .ui = ui, .rt = &inst.rt, .components = &inst.registry };
     instances.append(gpa, inst) catch return 0;
     _ = html.ensureBody(ui.doc) catch {};
-    return @intCast(instances.items.len - 1);
+    inst.id = @intCast(instances.items.len - 1);
+    return inst.id;
 }
 
 export fn ebui_destroy(id: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     for (inst.instances.items) |m| if (m) |x| x.destroy();
     inst.instances.deinit(gpa);
@@ -120,6 +171,8 @@ pub fn instance(id: u32) ?*Instance {
 }
 
 export fn ebui_set_wakeup(id: u32, cb: ?*const fn (?*anyopaque) callconv(.c) void, ctx: ?*anyopaque) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.wakeup = cb;
     inst.wakeup_ctx = ctx;
@@ -130,26 +183,36 @@ export fn ebui_set_wakeup(id: u32, cb: ?*const fn (?*anyopaque) callconv(.c) voi
 // ---------------------------------------------------------------------------
 
 export fn ebui_document_root(id: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.ui.doc.root;
 }
 
 export fn ebui_body(id: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return html.ensureBody(inst.ui.doc) catch 0;
 }
 
 export fn ebui_create_element(id: u32, tag: ?[*]const u8, tag_len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.ui.doc.createElement(span(tag, tag_len)) catch 0;
 }
 
 export fn ebui_create_text(id: u32, text: ?[*]const u8, len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.ui.doc.createText(span(text, len)) catch 0;
 }
 
 export fn ebui_create_comment(id: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.ui.doc.createComment() catch 0;
 }
@@ -159,6 +222,8 @@ fn validNode(inst: *Instance, n: u32) bool {
 }
 
 export fn ebui_insert_before(id: u32, parent: u32, child: u32, before: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, parent) or !validNode(inst, child)) return;
     if (before != 0 and (!validNode(inst, before) or inst.ui.doc.node(before).parent != parent)) {
@@ -169,18 +234,24 @@ export fn ebui_insert_before(id: u32, parent: u32, child: u32, before: u32) void
 }
 
 export fn ebui_remove(id: u32, node: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     inst.ui.doc.removeChild(node);
 }
 
 export fn ebui_destroy_node(id: u32, node: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     inst.ui.destroyNode(node);
 }
 
 export fn ebui_set_attribute(id: u32, node: u32, name: ?[*]const u8, name_len: usize, value: ?[*]const u8, value_len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     const n = span(name, name_len);
@@ -196,6 +267,8 @@ export fn ebui_set_attribute(id: u32, node: u32, name: ?[*]const u8, name_len: u
 }
 
 export fn ebui_remove_attribute(id: u32, node: u32, name: ?[*]const u8, name_len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     const n = span(name, name_len);
@@ -208,12 +281,16 @@ export fn ebui_remove_attribute(id: u32, node: u32, name: ?[*]const u8, name_len
 }
 
 export fn ebui_set_text(id: u32, node: u32, text: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     inst.ui.doc.setText(node, span(text, len)) catch {};
 }
 
 export fn ebui_set_style(id: u32, node: u32, prop: ?[*]const u8, prop_len: usize, value: ?[*]const u8, value_len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     inst.ui.doc.setStyleProperty(node, span(prop, prop_len), span(value, value_len)) catch {};
@@ -221,6 +298,8 @@ export fn ebui_set_style(id: u32, node: u32, prop: ?[*]const u8, prop_len: usize
 
 /// Parse HTML and append the nodes to `parent` (0 = body).
 export fn ebui_append_html(id: u32, parent: u32, src: ?[*]const u8, len: usize) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     const p = if (parent == 0) (html.ensureBody(inst.ui.doc) catch return false) else parent;
     html.parseInto(inst.ui.doc, p, span(src, len), .{ .implicit_root = false }) catch return false;
@@ -228,12 +307,16 @@ export fn ebui_append_html(id: u32, parent: u32, src: ?[*]const u8, len: usize) 
 }
 
 export fn ebui_add_stylesheet(id: u32, css: ?[*]const u8, len: usize) usize {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const sheet = inst.ui.doc.addStylesheet(span(css, len)) catch return 0;
     return @intFromPtr(sheet);
 }
 
 export fn ebui_remove_stylesheet(id: u32, handle: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     for (inst.ui.doc.sheets.items) |s| {
         if (@intFromPtr(s) == handle) {
@@ -244,6 +327,8 @@ export fn ebui_remove_stylesheet(id: u32, handle: usize) void {
 }
 
 export fn ebui_query_selector(id: u32, scope: u32, sel: ?[*]const u8, len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const s = if (scope == 0) inst.ui.doc.root else scope;
     return style_mod.querySelector(inst.ui.doc, s, span(sel, len)) catch 0;
@@ -251,6 +336,8 @@ export fn ebui_query_selector(id: u32, scope: u32, sel: ?[*]const u8, len: usize
 
 /// Current value of a text control (valid until the next call).
 export fn ebui_get_value(id: u32, node: u32, out_len: *usize) ?[*]const u8 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return null;
     if (!validNode(inst, node)) return null;
     const v = inst.ui.ix.value(node);
@@ -261,24 +348,32 @@ export fn ebui_get_value(id: u32, node: u32, out_len: *usize) ?[*]const u8 {
 }
 
 export fn ebui_set_value(id: u32, node: u32, v: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (!validNode(inst, node)) return;
     inst.ui.ix.setValue(node, span(v, len)) catch {};
 }
 
 export fn ebui_get_checked(id: u32, node: u32) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     if (!validNode(inst, node)) return false;
     return inst.ui.doc.node(node).state.checked;
 }
 
 export fn ebui_focus(id: u32, node: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (node == 0) inst.ui.ix.blur() else if (validNode(inst, node)) inst.ui.ix.focus(node, false);
 }
 
 /// Border-box of an element in window coordinates: out = [x, y, w, h].
 export fn ebui_get_rect(id: u32, node: u32, out: *[4]f32) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     if (!validNode(inst, node)) return false;
     const origin = inst.ui.ix.contentOrigin(node) orelse return false;
@@ -288,6 +383,8 @@ export fn ebui_get_rect(id: u32, node: u32, out: *[4]f32) bool {
 }
 
 export fn ebui_scroll_into_view(id: u32, node: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (validNode(inst, node)) inst.ui.ix.scrollIntoView(node);
 }
@@ -319,6 +416,19 @@ pub const Cmd = enum(u8) {
 /// core maps it to its own node id (returned via ebui_resolve).
 const IdMap = std.AutoHashMapUnmanaged(u32, u32);
 var id_maps: std.AutoHashMapUnmanaged(u32, IdMap) = .empty;
+/// core node id -> client id, per ui (events report client ids)
+var rev_maps: std.AutoHashMapUnmanaged(u32, IdMap) = .empty;
+
+fn revMap(ui_id: u32) ?*IdMap {
+    const gop = rev_maps.getOrPut(gpa, ui_id) catch return null;
+    if (!gop.found_existing) gop.value_ptr.* = .empty;
+    return gop.value_ptr;
+}
+
+fn clientOf(ui_id: u32, core: u32) u32 {
+    const m = rev_maps.getPtr(ui_id) orelse return 0;
+    return m.get(core) orelse 0;
+}
 
 fn mapId(ui_id: u32, client: u32) u32 {
     if (client == 0) return 0;
@@ -328,6 +438,8 @@ fn mapId(ui_id: u32, client: u32) u32 {
 
 /// Map a client id to a core node id (0 if unknown).
 export fn ebui_resolve(id: u32, client: u32) u32 {
+    lock();
+    defer unlock();
     return mapId(id, client);
 }
 
@@ -356,6 +468,8 @@ const Reader = struct {
 
 /// Apply a buffer of commands. Returns the number of commands applied.
 export fn ebui_apply(id: u32, buf: ?[*]const u8, len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     var r = Reader{ .buf = span(buf, len) };
     const gop = id_maps.getOrPut(gpa, id) catch return 0;
@@ -371,17 +485,20 @@ export fn ebui_apply(id: u32, buf: ?[*]const u8, len: usize) u32 {
                 const tag = r.str() orelse break;
                 const nid = doc.createElement(tag) catch break;
                 map.put(gpa, cid, nid) catch {};
+                if (revMap(id)) |rm| rm.put(gpa, nid, cid) catch {};
             },
             .create_text => {
                 const cid = r.u32_() orelse break;
                 const text = r.str() orelse break;
                 const nid = doc.createText(text) catch break;
                 map.put(gpa, cid, nid) catch {};
+                if (revMap(id)) |rm| rm.put(gpa, nid, cid) catch {};
             },
             .create_comment => {
                 const cid = r.u32_() orelse break;
                 const nid = doc.createComment() catch break;
                 map.put(gpa, cid, nid) catch {};
+                if (revMap(id)) |rm| rm.put(gpa, nid, cid) catch {};
             },
             .insert_before => {
                 const p = map.get(r.u32_() orelse break) orelse 0;
@@ -396,6 +513,7 @@ export fn ebui_apply(id: u32, buf: ?[*]const u8, len: usize) u32 {
                 const nid = map.get(cid) orelse 0;
                 ebui_destroy_node(id, nid);
                 _ = map.remove(cid);
+                if (rev_maps.getPtr(id)) |rm| _ = rm.remove(nid);
             },
             .set_attribute => {
                 const n = map.get(r.u32_() orelse break) orelse 0;
@@ -443,9 +561,12 @@ export fn ebui_apply(id: u32, buf: ?[*]const u8, len: usize) u32 {
 
 /// Bind an existing core node (e.g. body) to a client id for the command protocol.
 export fn ebui_bind_client_id(id: u32, client: u32, node: u32) void {
+    lock();
+    defer unlock();
     const gop = id_maps.getOrPut(gpa, id) catch return;
     if (!gop.found_existing) gop.value_ptr.* = .empty;
     gop.value_ptr.put(gpa, client, node) catch {};
+    if (revMap(id)) |rm| rm.put(gpa, node, client) catch {};
 }
 
 // ---------------------------------------------------------------------------
@@ -461,13 +582,17 @@ fn listenerKey(node: u32, t: u8) u64 {
 
 fn domListener(ctx: ?*anyopaque, ev: *events.Event) void {
     const inst: *Instance = @ptrCast(@alignCast(ctx.?));
-    // Record: kind u8, type u8, target u32, current u32, x f32, y f32,
-    // button u8, mods u8, detail u32, dx f32, dy f32, key str, data str
+    // Record: kind u8, type u8, serial u32, target u32, current u32 (client
+    // ids, 0 if unknown), target_core u32, x f32, y f32, button u8, mods u8,
+    // detail u32, dx f32, dy f32, key str, data str
     const q = &inst.queue;
+    const ui_id = inst.id;
     q.append(gpa, @intFromEnum(RecordKind.dom)) catch return;
     q.append(gpa, @intFromEnum(ev.type)) catch return;
+    appendU32(q, ev.serial);
+    appendU32(q, clientOf(ui_id, ev.target));
+    appendU32(q, clientOf(ui_id, ev.current_target));
     appendU32(q, ev.target);
-    appendU32(q, ev.current_target);
     appendF32(q, ev.x);
     appendF32(q, ev.y);
     q.append(gpa, ev.button) catch return;
@@ -497,6 +622,8 @@ fn appendStr(q: *std.ArrayList(u8), s: []const u8) void {
 
 /// Start delivering events of `type` (events.EventType ordinal) on `node`.
 export fn ebui_listen(id: u32, node: u32, event_type: u8) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     if (!validNode(inst, node)) return false;
     const t = std.enums.fromInt(events.EventType, event_type) orelse return false;
@@ -508,6 +635,8 @@ export fn ebui_listen(id: u32, node: u32, event_type: u8) bool {
 }
 
 export fn ebui_unlisten(id: u32, node: u32, event_type: u8) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     const key = listenerKey(node, event_type);
     if (inst.listeners.fetchRemove(key)) |kv| inst.ui.ix.removeListener(kv.value);
@@ -515,6 +644,8 @@ export fn ebui_unlisten(id: u32, node: u32, event_type: u8) void {
 
 /// Event type ordinal for a DOM event name ("click", "input", ...); 255 if unknown.
 export fn ebui_event_type(name: ?[*]const u8, len: usize) u8 {
+    lock();
+    defer unlock();
     const t = events.EventType.fromName(span(name, len)) orelse return 255;
     return @intFromEnum(t);
 }
@@ -522,6 +653,8 @@ export fn ebui_event_type(name: ?[*]const u8, len: usize) u8 {
 /// Copy queued event records into `out`. Returns bytes written; records are
 /// never split (a too-small buffer returns 0 and keeps the queue).
 export fn ebui_poll_events(id: u32, out: ?[*]u8, cap: usize) usize {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const q = &inst.queue;
     if (q.items.len == 0) return 0;
@@ -536,6 +669,8 @@ export fn ebui_poll_events(id: u32, out: ?[*]u8, cap: usize) usize {
 }
 
 export fn ebui_pending_events(id: u32) usize {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.queue.items.len;
 }
@@ -545,11 +680,15 @@ export fn ebui_pending_events(id: u32) usize {
 // ---------------------------------------------------------------------------
 
 export fn ebui_scope_create(id: u32, parent: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return inst.rt.scope(parent) catch 0;
 }
 
 export fn ebui_scope_destroy(id: u32, scope: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.freeScope(scope);
 }
@@ -561,20 +700,30 @@ fn setValue(id: u32, scope: u32, name: []const u8, v: reactive.Value) u32 {
 
 /// Define or update a named value; returns the signal id.
 export fn ebui_scope_set_number(id: u32, scope: u32, name: ?[*]const u8, name_len: usize, v: f64) u32 {
+    lock();
+    defer unlock();
     return setValue(id, scope, span(name, name_len), .{ .number = v });
 }
 export fn ebui_scope_set_bool(id: u32, scope: u32, name: ?[*]const u8, name_len: usize, v: bool) u32 {
+    lock();
+    defer unlock();
     return setValue(id, scope, span(name, name_len), .{ .boolean = v });
 }
 export fn ebui_scope_set_string(id: u32, scope: u32, name: ?[*]const u8, name_len: usize, v: ?[*]const u8, v_len: usize) u32 {
+    lock();
+    defer unlock();
     return setValue(id, scope, span(name, name_len), .{ .string = span(v, v_len) });
 }
 /// Make a named slot hold a nested scope (an object).
 export fn ebui_scope_set_scope(id: u32, scope: u32, name: ?[*]const u8, name_len: usize, child: u32) u32 {
+    lock();
+    defer unlock();
     return setValue(id, scope, span(name, name_len), .{ .scope = child });
 }
 /// Make a named slot hold a list; returns the list id.
 export fn ebui_scope_set_list(id: u32, scope: u32, name: ?[*]const u8, name_len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const l = inst.rt.list() catch return 0;
     _ = inst.rt.defineValue(scope, span(name, name_len), .{ .list = l }) catch return 0;
@@ -582,23 +731,33 @@ export fn ebui_scope_set_list(id: u32, scope: u32, name: ?[*]const u8, name_len:
 }
 
 export fn ebui_signal_set_number(id: u32, sig: u32, v: f64) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.set(sig, .{ .number = v }) catch {};
 }
 export fn ebui_signal_set_string(id: u32, sig: u32, v: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.set(sig, .{ .string = span(v, len) }) catch {};
 }
 export fn ebui_signal_set_bool(id: u32, sig: u32, v: bool) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.set(sig, .{ .boolean = v }) catch {};
 }
 export fn ebui_signal_get_number(id: u32, sig: u32) f64 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const v = inst.rt.peek(sig);
     return if (v == .number) v.number else if (v == .boolean) @as(f64, @floatFromInt(@intFromBool(v.boolean))) else 0;
 }
 export fn ebui_signal_get_string(id: u32, sig: u32, out_len: *usize) ?[*]const u8 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return null;
     const v = inst.rt.peek(sig);
     inst.string_out.clearRetainingCapacity();
@@ -610,43 +769,63 @@ export fn ebui_signal_get_string(id: u32, sig: u32, out_len: *usize) ?[*]const u
 }
 
 export fn ebui_batch_begin(id: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.batchBegin();
 }
 export fn ebui_batch_end(id: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.batchEnd();
 }
 
 export fn ebui_list_push_scope(id: u32, list: u32, scope: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listPush(list, .{ .scope = scope }) catch {};
 }
 export fn ebui_list_insert_scope(id: u32, list: u32, index: u32, scope: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listInsert(list, index, .{ .scope = scope }) catch {};
 }
 export fn ebui_list_push_string(id: u32, list: u32, v: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listPush(list, .{ .string = span(v, len) }) catch {};
 }
 export fn ebui_list_push_number(id: u32, list: u32, v: f64) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listPush(list, .{ .number = v }) catch {};
 }
 export fn ebui_list_remove(id: u32, list: u32, index: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listRemove(list, index);
 }
 export fn ebui_list_move(id: u32, list: u32, from: u32, to: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listMove(list, from, to);
 }
 export fn ebui_list_clear(id: u32, list: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.rt.listClear(list);
 }
 export fn ebui_list_len(id: u32, list: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     return @intCast(inst.rt.listLen(list));
 }
@@ -709,6 +888,8 @@ fn queuedHandler(ctx: ?*anyopaque, rt: *reactive.Runtime, scope: reactive.ScopeI
 
 /// Declare a handler name in a scope; calls arrive as handler records.
 export fn ebui_scope_set_handler(id: u32, scope: u32, name: ?[*]const u8, name_len: usize) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     const h = gpa.create(HandlerCtx) catch return false;
     h.* = .{ .inst = inst, .name = gpa.dupe(u8, span(name, name_len)) catch return false };
@@ -719,6 +900,8 @@ export fn ebui_scope_set_handler(id: u32, scope: u32, name: ?[*]const u8, name_l
 
 /// Compile a template; returns a template id (0 on error).
 export fn ebui_template_compile(id: u32, src: ?[*]const u8, len: usize) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     const t = template.compile(gpa, span(src, len), &inst.registry) catch return 0;
     if (inst.templates.items.len == 0) inst.templates.append(gpa, null) catch {};
@@ -728,6 +911,8 @@ export fn ebui_template_compile(id: u32, src: ?[*]const u8, len: usize) u32 {
 
 /// Register a template as a component tag usable in other templates.
 export fn ebui_component_register(id: u32, name: ?[*]const u8, name_len: usize, src: ?[*]const u8, len: usize) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     const t = template.compile(gpa, span(src, len), &inst.registry) catch return false;
     inst.registry.register(span(name, name_len), .{ .template = t }) catch return false;
@@ -737,6 +922,8 @@ export fn ebui_component_register(id: u32, name: ?[*]const u8, name_len: usize, 
 /// Mount a compiled template with `scope` under `parent` (0 = body) before
 /// `before` (0 = append). Returns a mount id.
 export fn ebui_template_mount(id: u32, tpl: u32, scope: u32, parent: u32, before: u32) u32 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return 0;
     if (tpl == 0 or tpl >= inst.templates.items.len) return 0;
     const t = inst.templates.items[tpl] orelse return 0;
@@ -748,6 +935,8 @@ export fn ebui_template_mount(id: u32, tpl: u32, scope: u32, parent: u32, before
 }
 
 export fn ebui_template_unmount(id: u32, mount_id: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     if (mount_id == 0 or mount_id >= inst.instances.items.len) return;
     if (inst.instances.items[mount_id]) |m| m.destroy();
@@ -759,11 +948,15 @@ export fn ebui_template_unmount(id: u32, mount_id: u32) void {
 // ---------------------------------------------------------------------------
 
 export fn ebui_resize(id: u32, w: f32, h: f32, scale: f32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.ui.resize(w, h, scale);
 }
 
 export fn ebui_set_dark(id: u32, dark: bool) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.ui.setColorScheme(dark);
     inst.ui.doc.markAllStyleDirty();
@@ -771,17 +964,23 @@ export fn ebui_set_dark(id: u32, dark: bool) void {
 
 /// Advance time and run style/layout/paint. Returns true if a frame is ready.
 export fn ebui_update(id: u32, now: f64) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     inst.ui.tick(now);
     return inst.ui.update() catch false;
 }
 
 export fn ebui_wants_frames(id: u32) bool {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return false;
     return inst.ui.wantsFrames();
 }
 
 export fn ebui_pointer(id: u32, kind: u8, x: f32, y: f32, button: u8, mods: u8) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     const m: events.Modifiers = @bitCast(mods);
     switch (kind) {
@@ -794,28 +993,38 @@ export fn ebui_pointer(id: u32, kind: u8, x: f32, y: f32, button: u8, mods: u8) 
 }
 
 export fn ebui_wheel(id: u32, x: f32, y: f32, dx: f32, dy: f32, mods: u8) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.ui.ix.wheel(x, y, dx, dy, @bitCast(mods));
 }
 
 export fn ebui_key(id: u32, down: bool, key: ?[*]const u8, len: usize, mods: u8) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     const k = span(key, len);
     if (down) inst.ui.ix.keyDown(k, @bitCast(mods)) else inst.ui.ix.keyUp(k, @bitCast(mods));
 }
 
 export fn ebui_text_input(id: u32, text: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.ui.ix.textInput(span(text, len));
 }
 
 export fn ebui_composition(id: u32, text: ?[*]const u8, len: usize, sel: u32) void {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return;
     inst.ui.ix.setComposition(span(text, len), sel);
 }
 
 /// Serialize a subtree as HTML (debugging, tests). Valid until the next call.
 export fn ebui_serialize(id: u32, node: u32, out_len: *usize) ?[*]const u8 {
+    lock();
+    defer unlock();
     const inst = get(id) orelse return null;
     if (!validNode(inst, node)) return null;
     inst.string_out.clearRetainingCapacity();

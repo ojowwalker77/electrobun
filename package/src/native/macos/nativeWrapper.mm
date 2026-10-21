@@ -3776,8 +3776,37 @@ extern "C" uint8_t *uiRasterizeText(const char *text, const char *fontName,
 
 extern "C" void uiFreeTextBitmap(uint8_t *pixels) { free(pixels); }
 
-@interface WGPUInputView : NSView
+// Per-view hooks used by the native UI core (ElectrobunCore ebui_*). When a
+// view has UI handlers they take precedence over the global WGPU handlers, the
+// view becomes an NSTextInputClient (text input + IME), and frames are driven
+// by a display link on request.
+typedef void (*UIViewPointerCallback)(void *ctx, uint32_t eventType, double x,
+                                      double y, double buttonOrDx, double dy,
+                                      uint32_t modifiers);
+// Returns 1 when the key was handled (it is then not sent to the input
+// method system unless a composition is active).
+typedef uint32_t (*UIViewKeyCallback)(void *ctx, uint32_t keyCode,
+                                      uint32_t modifiers, uint32_t isDown,
+                                      uint32_t isRepeat, const char *characters,
+                                      const char *charactersIgnoringModifiers);
+// kind: 0 insert (committed text), 1 set marked text (selection = selLoc),
+// 2 unmark
+typedef void (*UIViewTextCallback)(void *ctx, uint32_t kind, const char *text,
+                                   uint32_t selLoc);
+typedef void (*UIViewFrameCallback)(void *ctx, double timestamp);
+
+@interface WGPUInputView : NSView <NSTextInputClient>
 @property(nonatomic, assign) uint32_t wgpuViewId;
+@property(nonatomic, assign) void *uiCtx;
+@property(nonatomic, assign) UIViewPointerCallback uiPointer;
+@property(nonatomic, assign) UIViewKeyCallback uiKey;
+@property(nonatomic, assign) UIViewTextCallback uiText;
+@property(nonatomic, assign) UIViewFrameCallback uiFrame;
+@property(nonatomic, strong) id uiDisplayLink;
+@property(nonatomic, assign) NSRect uiImeRect;
+@property(nonatomic, assign) BOOL uiComposing;
+@property(nonatomic, assign) BOOL uiFrameRequested;
+- (void)uiRequestFrame;
 @end
 
 @implementation WGPUInputView
@@ -3829,6 +3858,18 @@ extern "C" void uiFreeTextBitmap(uint8_t *pixels) { free(pixels); }
   return YES;
 }
 - (void)keyDown:(NSEvent *)event {
+  if (self.uiKey) {
+    const char *chars = [[event characters] UTF8String];
+    const char *raw = [[event charactersIgnoringModifiers] UTF8String];
+    uint32_t handled =
+        self.uiKey(self.uiCtx, (uint32_t)[event keyCode],
+                   [self modifierMaskFromEvent:event], 1,
+                   [event isARepeat] ? 1 : 0, chars ? chars : "", raw ? raw : "");
+    if (self.uiText && (!handled || self.uiComposing)) {
+      [self interpretKeyEvents:@[ event ]];
+    }
+    return;
+  }
   if (g_wgpuKeyHandler) {
     const char *chars = [[event characters] UTF8String];
     g_wgpuKeyHandler(self.wgpuViewId, (uint32_t)[event keyCode],
@@ -3843,6 +3884,12 @@ extern "C" void uiFreeTextBitmap(uint8_t *pixels) { free(pixels); }
   }
 }
 - (void)keyUp:(NSEvent *)event {
+  if (self.uiKey) {
+    const char *raw = [[event charactersIgnoringModifiers] UTF8String];
+    self.uiKey(self.uiCtx, (uint32_t)[event keyCode],
+               [self modifierMaskFromEvent:event], 0, 0, "", raw ? raw : "");
+    return;
+  }
   if (g_wgpuKeyHandler) {
     g_wgpuKeyHandler(self.wgpuViewId, (uint32_t)[event keyCode],
                      [self modifierMaskFromEvent:event], 0, 0, "");
@@ -3874,6 +3921,13 @@ extern "C" void uiFreeTextBitmap(uint8_t *pixels) { free(pixels); }
               event:(NSEvent *)event
                  dx:(double)dx
                  dy:(double)dy {
+  if (self.uiPointer) {
+    NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
+    double localY = self.isFlipped ? p.y : self.bounds.size.height - p.y;
+    self.uiPointer(self.uiCtx, type, p.x, localY, dx, dy,
+                   [self modifierMaskFromEvent:event]);
+    return;
+  }
   if (!g_wgpuPointerHandler)
     return;
   NSPoint p = [self convertPoint:[event locationInWindow] fromView:nil];
@@ -3927,6 +3981,123 @@ extern "C" void uiFreeTextBitmap(uint8_t *pixels) { free(pixels); }
     dy *= 10.0;
   }
   [self emitPointer:3 event:event dx:dx dy:dy];
+}
+
+// ---- UI core: frames ----
+
+- (void)uiRequestFrame {
+  if (!self.uiFrame || self.uiFrameRequested)
+    return;
+  self.uiFrameRequested = YES;
+  if (!self.uiDisplayLink && [self respondsToSelector:@selector(displayLinkWithTarget:selector:)]) {
+    CADisplayLink *link = [self displayLinkWithTarget:self selector:@selector(uiOnDisplayLink:)];
+    [link addToRunLoop:[NSRunLoop mainRunLoop] forMode:NSRunLoopCommonModes];
+    self.uiDisplayLink = link;
+  }
+  if (self.uiDisplayLink) {
+    ((CADisplayLink *)self.uiDisplayLink).paused = NO;
+  } else {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_MSEC),
+                   dispatch_get_main_queue(), ^{
+                     [self uiOnDisplayLink:nil];
+                   });
+  }
+}
+
+- (void)uiOnDisplayLink:(id)link {
+  if (self.uiDisplayLink)
+    ((CADisplayLink *)self.uiDisplayLink).paused = YES;
+  self.uiFrameRequested = NO;
+  if (self.uiFrame)
+    self.uiFrame(self.uiCtx, CACurrentMediaTime());
+}
+
+- (void)setFrameSize:(NSSize)newSize {
+  [super setFrameSize:newSize];
+  if (self.uiFrame) {
+    // render synchronously so live resize never shows stale content
+    self.uiFrame(self.uiCtx, CACurrentMediaTime());
+  }
+}
+
+- (void)viewDidChangeBackingProperties {
+  [super viewDidChangeBackingProperties];
+  [self uiRequestFrame];
+}
+
+// ---- UI core: NSTextInputClient ----
+
+- (NSString *)uiStringOf:(id)string {
+  if ([string isKindOfClass:[NSAttributedString class]])
+    return [(NSAttributedString *)string string];
+  return (NSString *)string;
+}
+
+- (void)insertText:(id)string replacementRange:(NSRange)replacementRange {
+  if (!self.uiText)
+    return;
+  self.uiComposing = NO;
+  const char *t = [[self uiStringOf:string] UTF8String];
+  self.uiText(self.uiCtx, 0, t ? t : "", 0);
+}
+
+- (void)setMarkedText:(id)string
+        selectedRange:(NSRange)selectedRange
+     replacementRange:(NSRange)replacementRange {
+  if (!self.uiText)
+    return;
+  NSString *s = [self uiStringOf:string];
+  self.uiComposing = s.length > 0;
+  // convert the UTF-16 selection offset to UTF-8 bytes
+  NSString *prefix = [s substringToIndex:MIN(selectedRange.location, s.length)];
+  uint32_t sel = (uint32_t)strlen([prefix UTF8String]);
+  const char *t = [s UTF8String];
+  self.uiText(self.uiCtx, 1, t ? t : "", sel);
+}
+
+- (void)unmarkText {
+  if (!self.uiText)
+    return;
+  self.uiComposing = NO;
+  self.uiText(self.uiCtx, 2, "", 0);
+}
+
+- (BOOL)hasMarkedText {
+  return self.uiComposing;
+}
+
+- (NSRange)markedRange {
+  return self.uiComposing ? NSMakeRange(0, 1) : NSMakeRange(NSNotFound, 0);
+}
+
+- (NSRange)selectedRange {
+  return NSMakeRange(0, 0);
+}
+
+- (NSAttributedString *)attributedSubstringForProposedRange:(NSRange)range
+                                                actualRange:(NSRangePointer)actualRange {
+  return nil;
+}
+
+- (NSArray<NSAttributedStringKey> *)validAttributesForMarkedText {
+  return @[];
+}
+
+- (NSRect)firstRectForCharacterRange:(NSRange)range
+                         actualRange:(NSRangePointer)actualRange {
+  NSRect r = self.uiImeRect;
+  if (!self.isFlipped)
+    r.origin.y = self.bounds.size.height - r.origin.y - r.size.height;
+  NSRect inWindow = [self convertRect:r toView:nil];
+  return self.window ? [self.window convertRectToScreen:inWindow] : inWindow;
+}
+
+- (NSUInteger)characterIndexForPoint:(NSPoint)point {
+  return 0;
+}
+
+- (void)doCommandBySelector:(SEL)selector {
+  // named keys are delivered through the key callback
 }
 @end
 
@@ -8612,6 +8783,105 @@ extern "C" void wgpuViewRemove(AbstractView *abstractView) {
     return;
   runOnMainThreadAsyncVoid(^{
     [abstractView remove];
+  });
+}
+
+static WGPUInputView *uiInputViewOf(AbstractView *abstractView) {
+  if (!abstractView || ![abstractView.nsView isKindOfClass:[WGPUInputView class]])
+    return nil;
+  return (WGPUInputView *)abstractView.nsView;
+}
+
+// Route a WGPU view's input and frames to the native UI core.
+extern "C" void wgpuViewSetUIHandlers(AbstractView *abstractView, void *ctx,
+                                      UIViewPointerCallback pointer,
+                                      UIViewKeyCallback key,
+                                      UIViewTextCallback text,
+                                      UIViewFrameCallback frame) {
+  runOnMainThreadSyncVoid(^{
+    WGPUInputView *view = uiInputViewOf(abstractView);
+    if (!view)
+      return;
+    view.uiCtx = ctx;
+    view.uiPointer = pointer;
+    view.uiKey = key;
+    view.uiText = text;
+    view.uiFrame = frame;
+    if (!frame && view.uiDisplayLink) {
+      [(CADisplayLink *)view.uiDisplayLink invalidate];
+      view.uiDisplayLink = nil;
+    }
+  });
+}
+
+// Request one frame callback at the next display refresh (any thread).
+extern "C" void wgpuViewRequestFrame(AbstractView *abstractView) {
+  runOnMainThreadAsyncVoid(^{
+    [uiInputViewOf(abstractView) uiRequestFrame];
+  });
+}
+
+// Caret rectangle (view coordinates, top-left origin) for IME candidates.
+extern "C" void wgpuViewSetImeRect(AbstractView *abstractView, double x,
+                                   double y, double w, double h) {
+  runOnMainThreadAsyncVoid(^{
+    WGPUInputView *view = uiInputViewOf(abstractView);
+    if (view)
+      view.uiImeRect = NSMakeRect(x, y, w, h);
+  });
+}
+
+// View size in points and backing scale. Call on the main thread.
+extern "C" void wgpuViewGetMetrics(AbstractView *abstractView, double *width,
+                                   double *height, double *scale) {
+  WGPUInputView *view = uiInputViewOf(abstractView);
+  if (!view) {
+    *width = 0;
+    *height = 0;
+    *scale = 1;
+    return;
+  }
+  *width = view.bounds.size.width;
+  *height = view.bounds.size.height;
+  *scale = view.window ? view.window.backingScaleFactor : 2.0;
+  CAMetalLayer *layer = (CAMetalLayer *)view.layer;
+  if ([layer isKindOfClass:[CAMetalLayer class]]) {
+    layer.contentsScale = *scale;
+  }
+}
+
+// Begin a window drag from the current mouse-down event (main thread).
+extern "C" void wgpuViewBeginWindowDrag(AbstractView *abstractView) {
+  WGPUInputView *view = uiInputViewOf(abstractView);
+  NSEvent *event = [NSApp currentEvent];
+  if (view && view.window && event)
+    [view.window performWindowDragWithEvent:event];
+}
+
+// Set the mouse cursor by CSS cursor name.
+extern "C" void uiSetCursor(const char *name) {
+  NSString *n = [NSString stringWithUTF8String:name ? name : "default"];
+  runOnMainThreadAsyncVoid(^{
+    NSCursor *c = [NSCursor arrowCursor];
+    if ([n isEqualToString:@"pointer"])
+      c = [NSCursor pointingHandCursor];
+    else if ([n isEqualToString:@"text"] || [n isEqualToString:@"vertical-text"])
+      c = [NSCursor IBeamCursor];
+    else if ([n isEqualToString:@"crosshair"] || [n isEqualToString:@"cell"])
+      c = [NSCursor crosshairCursor];
+    else if ([n isEqualToString:@"grab"] || [n isEqualToString:@"move"])
+      c = [NSCursor openHandCursor];
+    else if ([n isEqualToString:@"grabbing"])
+      c = [NSCursor closedHandCursor];
+    else if ([n isEqualToString:@"not-allowed"] || [n isEqualToString:@"no-drop"])
+      c = [NSCursor operationNotAllowedCursor];
+    else if ([n hasSuffix:@"ew-resize"] || [n isEqualToString:@"col-resize"] ||
+             [n isEqualToString:@"e-resize"] || [n isEqualToString:@"w-resize"])
+      c = [NSCursor resizeLeftRightCursor];
+    else if ([n hasSuffix:@"ns-resize"] || [n isEqualToString:@"row-resize"] ||
+             [n isEqualToString:@"n-resize"] || [n isEqualToString:@"s-resize"])
+      c = [NSCursor resizeUpDownCursor];
+    [c set];
   });
 }
 
