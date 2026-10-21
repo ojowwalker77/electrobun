@@ -16,6 +16,7 @@ pub const events = @import("events.zig");
 pub const anim = @import("anim.zig");
 pub const ui = @import("ui.zig");
 pub const Ui = ui.Ui;
+pub const host_macos = if (@import("builtin").os.tag == .macos) @import("host/macos.zig") else struct {};
 pub const coretext = if (@import("builtin").os.tag == .macos) @import("text/coretext.zig") else struct {};
 pub const css_tokenizer = @import("css/tokenizer.zig");
 pub const css_values = @import("css/values.zig");

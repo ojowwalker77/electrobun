@@ -34,6 +34,22 @@ pub fn build(b: *std.Build) void {
     });
     b.installArtifact(gpushot);
 
+    if (target.result.os.tag == .macos) {
+        const devhost = b.addExecutable(.{
+            .name = "devhost",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("tools/devhost.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "electrobun_ui", .module = mod }},
+            }),
+        });
+        devhost.root_module.linkFramework("AppKit", .{});
+        devhost.root_module.linkFramework("QuartzCore", .{});
+        devhost.root_module.linkFramework("Metal", .{});
+        b.installArtifact(devhost);
+    }
+
     const tests = b.addTest(.{ .root_module = mod });
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run UI core tests");
