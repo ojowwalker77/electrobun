@@ -48,6 +48,19 @@ pub fn build(b: *std.Build) void {
         devhost.root_module.linkFramework("QuartzCore", .{});
         devhost.root_module.linkFramework("Metal", .{});
         b.installArtifact(devhost);
+
+        const todo = b.addExecutable(.{
+            .name = "todo",
+            .root_module = b.createModule(.{
+                .root_source_file = b.path("examples/todo.zig"),
+                .target = target,
+                .optimize = optimize,
+                .imports = &.{.{ .name = "electrobun_ui", .module = mod }},
+            }),
+        });
+        todo.root_module.linkFramework("AppKit", .{});
+        todo.root_module.linkFramework("QuartzCore", .{});
+        b.installArtifact(todo);
     }
 
     const tests = b.addTest(.{ .root_module = mod });
