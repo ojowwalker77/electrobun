@@ -329,11 +329,11 @@ pub const CoreTextBackend = struct {
         return s.addFont(ct, 0);
     }
 
-    fn shape(p: *anyopaque, id: font.FontId, text: []const u8, out: *std.ArrayList(font.Glyph), gpa: Allocator) anyerror!void {
+    fn shape(p: *anyopaque, id: font.FontId, text: []const u8, out: *std.ArrayList(font.Glyph), gpa: Allocator) Allocator.Error!void {
         const s = me(p);
         if (text.len == 0) return;
         if (id >= s.fonts.items.len) return;
-        const str = cfstr(text) orelse return error.InvalidUtf8;
+        const str = cfstr(text) orelse return;
         defer CFRelease(str);
         // utf16 index -> utf8 byte offset
         s.utf16_to_utf8.clearRetainingCapacity();
@@ -350,11 +350,11 @@ pub const CoreTextBackend = struct {
         }
         const keys = [_]?*const anyopaque{kCTFontAttributeName};
         const vals = [_]?*const anyopaque{s.fonts.items[id].ct};
-        const attrs = dict(&keys, &vals) orelse return error.CoreText;
+        const attrs = dict(&keys, &vals) orelse return;
         defer CFRelease(attrs);
-        const astr = CFAttributedStringCreate(null, str, attrs) orelse return error.CoreText;
+        const astr = CFAttributedStringCreate(null, str, attrs) orelse return;
         defer CFRelease(astr);
-        const line = CTLineCreateWithAttributedString(astr) orelse return error.CoreText;
+        const line = CTLineCreateWithAttributedString(astr) orelse return;
         defer CFRelease(line);
         const runs = CTLineGetGlyphRuns(line);
         const nruns = CFArrayGetCount(runs);

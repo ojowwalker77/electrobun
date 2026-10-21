@@ -16,7 +16,44 @@ pub const Options = struct {
     /// keep whitespace-only text nodes (they are ignored by block/flex layout
     /// anyway, but matter inside inline formatting contexts)
     keep_whitespace: bool = true,
+    /// when parsing into the document node, create <html><head><body> like a
+    /// browser does (explicit html/head/body tags merge into them)
+    implicit_root: bool = true,
 };
+
+/// The document's <body>, creating html/head/body if needed.
+pub fn ensureBody(doc: *Document) Error!NodeId {
+    var html_el = doc.documentElement();
+    if (html_el == dom.null_id or doc.node(html_el).tag != doc.atoms.html) {
+        html_el = try doc.createElement("html");
+        // move any existing top-level nodes into the new body
+        const body = try doc.createElement("body");
+        const head = try doc.createElement("head");
+        var c = doc.node(doc.root).first_child;
+        while (c != dom.null_id) {
+            const next = doc.node(c).next;
+            doc.appendChild(body, c);
+            c = next;
+        }
+        doc.appendChild(doc.root, html_el);
+        doc.appendChild(html_el, head);
+        doc.appendChild(html_el, body);
+        return body;
+    }
+    return childWithTag(doc, html_el, doc.atoms.body) orelse blk: {
+        const body = try doc.createElement("body");
+        doc.appendChild(html_el, body);
+        break :blk body;
+    };
+}
+
+fn childWithTag(doc: *Document, parent: NodeId, tag: dom.Atom) ?NodeId {
+    var c = doc.node(parent).first_child;
+    while (c != dom.null_id) : (c = doc.node(c).next) {
+        if (doc.node(c).kind == .element and doc.node(c).tag == tag) return c;
+    }
+    return null;
+}
 
 pub const Error = error{OutOfMemory};
 
@@ -24,7 +61,14 @@ pub const Error = error{OutOfMemory};
 pub fn parseInto(doc: *Document, parent: NodeId, src: []const u8, opts: Options) Error!void {
     var p = Parser{ .doc = doc, .src = src, .opts = opts };
     defer p.stack.deinit(doc.gpa);
-    try p.stack.append(doc.gpa, parent);
+    if (parent == doc.root and opts.implicit_root) {
+        const body = try ensureBody(doc);
+        p.html_el = doc.node(body).parent;
+        p.body_el = body;
+        try p.stack.append(doc.gpa, body);
+    } else {
+        try p.stack.append(doc.gpa, parent);
+    }
     try p.run();
 }
 
@@ -42,6 +86,8 @@ const Parser = struct {
     opts: Options,
     stack: std.ArrayList(NodeId) = .empty,
     text_buf: std.ArrayList(u8) = .empty,
+    html_el: NodeId = dom.null_id,
+    body_el: NodeId = dom.null_id,
 
     fn current(p: *Parser) NodeId {
         return p.stack.items[p.stack.items.len - 1];
@@ -138,6 +184,19 @@ const Parser = struct {
 
         p.applyImpliedEnds(name);
 
+        if (p.body_el != dom.null_id and (std.mem.eql(u8, name, "html") or std.mem.eql(u8, name, "body") or std.mem.eql(u8, name, "head"))) {
+            // merge attributes into the implicit element and continue in body
+            const target = if (std.mem.eql(u8, name, "html")) p.html_el else if (std.mem.eql(u8, name, "body")) p.body_el else childWithTag(p.doc, p.html_el, p.doc.atoms.head) orelse p.body_el;
+            try p.readAttrsInto(target);
+            if (std.mem.eql(u8, name, "head")) {
+                try p.stack.append(gpa, target);
+            } else {
+                p.stack.shrinkRetainingCapacity(1);
+                p.stack.items[0] = p.body_el;
+            }
+            return;
+        }
+
         const el = try p.doc.createElement(name);
         // attributes
         var self_closing = false;
@@ -201,6 +260,37 @@ const Parser = struct {
             return;
         }
         try p.stack.append(gpa, el);
+    }
+
+    fn readAttrsInto(p: *Parser, el: NodeId) Error!void {
+        const gpa = p.doc.gpa;
+        while (p.pos < p.src.len) {
+            p.skipWs();
+            if (p.pos >= p.src.len) break;
+            const ch = p.src[p.pos];
+            if (ch == '>') {
+                p.pos += 1;
+                break;
+            }
+            if (ch == '/') {
+                p.pos += 1;
+                continue;
+            }
+            const aname = p.readAttrName();
+            if (aname.len == 0) {
+                p.pos += 1;
+                continue;
+            }
+            p.skipWs();
+            var value: std.ArrayList(u8) = .empty;
+            defer value.deinit(gpa);
+            if (p.pos < p.src.len and p.src[p.pos] == '=') {
+                p.pos += 1;
+                p.skipWs();
+                try p.readAttrValue(&value);
+            }
+            try p.doc.setAttribute(el, aname, value.items);
+        }
     }
 
     fn readAttrName(p: *Parser) []const u8 {
@@ -301,6 +391,7 @@ const Parser = struct {
         p.pos = @min(end + 1, p.src.len);
         var buf: [64]u8 = undefined;
         const name = if (raw.len <= buf.len) std.ascii.lowerString(&buf, raw) else raw;
+        if (p.body_el != dom.null_id and (std.mem.eql(u8, name, "html") or std.mem.eql(u8, name, "body"))) return;
         // find matching open element; ignore stray end tags
         var i = p.stack.items.len;
         while (i > 1) {
@@ -400,7 +491,7 @@ pub fn decodeEntities(gpa: Allocator, s: []const u8, out: *std.ArrayList(u8)) Er
 fn roundTrip(src: []const u8, expected: []const u8) !void {
     const doc = try Document.init(std.testing.allocator);
     defer doc.deinit();
-    try parseInto(doc, doc.root, src, .{});
+    try parseInto(doc, doc.root, src, .{ .implicit_root = false });
     var out: std.ArrayList(u8) = .empty;
     defer out.deinit(std.testing.allocator);
     try doc.serialize(doc.root, &out);
@@ -423,5 +514,12 @@ test "style collection" {
     defer doc.deinit();
     try parseInto(doc, doc.root, "<style>.a { color: red }</style><div class=a></div>", .{});
     try std.testing.expectEqual(@as(usize, 1), doc.sheets.items.len);
+    var out: std.ArrayList(u8) = .empty;
+    defer out.deinit(std.testing.allocator);
+    try doc.serialize(doc.root, &out);
+    try std.testing.expectEqualStrings("<html><head></head><body><style></style><div class=\"a\"></div></body></html>", out.items);
+    // explicit body attributes merge into the implicit body
+    try parseInto(doc, doc.root, "<body class=dark><p>x</p></body>", .{});
+    try std.testing.expectEqualStrings("dark", doc.getAttribute(try ensureBody(doc), "class").?);
     try std.testing.expectEqual(@as(usize, 1), doc.sheets.items[0].rules.items.len);
 }

@@ -54,7 +54,7 @@ pub const Backend = struct {
         metrics: *const fn (ptr: *anyopaque, font: FontId) Metrics,
         /// Shape `text` (UTF-8) with `font`, appending glyphs in visual order.
         /// Fallback fonts may appear in the output.
-        shape: *const fn (ptr: *anyopaque, font: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) anyerror!void,
+        shape: *const fn (ptr: *anyopaque, font: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) std.mem.Allocator.Error!void,
         /// Rasterize a glyph at `scale` (device pixels per CSS px) with a
         /// horizontal subpixel offset in [0, 1). Pixels are owned by the
         /// backend until the next call.
@@ -72,7 +72,7 @@ pub const Backend = struct {
     pub fn metrics(b: Backend, f: FontId) Metrics {
         return b.vtable.metrics(b.ptr, f);
     }
-    pub fn shape(b: Backend, f: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) !void {
+    pub fn shape(b: Backend, f: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) std.mem.Allocator.Error!void {
         return b.vtable.shape(b.ptr, f, text, out, gpa);
     }
     pub fn rasterize(b: Backend, f: FontId, glyph: u32, scale: f32, subpixel: f32) ?GlyphBitmap {
@@ -129,7 +129,7 @@ pub const MockBackend = struct {
         const sz = sizeOf(self_(p), f);
         return .{ .ascent = sz * 0.8, .descent = sz * 0.2, .x_height = sz * 0.5, .cap_height = sz * 0.7, .underline_pos = sz * 0.1, .underline_thickness = @max(1, sz / 16) };
     }
-    fn shape(p: *anyopaque, f: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) anyerror!void {
+    fn shape(p: *anyopaque, f: FontId, text: []const u8, out: *std.ArrayList(Glyph), gpa: std.mem.Allocator) std.mem.Allocator.Error!void {
         const sz = sizeOf(self_(p), f);
         var it = std.unicode.Utf8Iterator{ .bytes = text, .i = 0 };
         var pos: usize = 0;
