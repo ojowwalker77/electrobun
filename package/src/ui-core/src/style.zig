@@ -1012,6 +1012,21 @@ fn matchHas(doc: *const Document, s: *const Selector, id: NodeId) bool {
 // Computing values
 // ---------------------------------------------------------------------------
 
+/// Apply declarations (e.g. one @keyframes step) on top of an already
+/// computed style. Used by the animation engine.
+pub fn applyDeclsTo(e: *Engine, doc: *Document, id: NodeId, base: *const Style, parent: ?*const Style, decls: []const Declaration, arena: Allocator) Allocator.Error!Style {
+    var c = Computer{ .e = e, .doc = doc, .id = id, .arena = arena, .parent = parent };
+    c.s = base.*;
+    c.border_cc = .{ false, false, false, false };
+    c.outline_cc = false;
+    c.deco_cc = false;
+    inline for (.{ Computer.Pass.font, Computer.Pass.rest }) |pass| {
+        for (decls) |*d| try c.applyDecl(d, pass);
+    }
+    c.finish();
+    return c.s;
+}
+
 const Computer = struct {
     e: *Engine,
     doc: *Document,

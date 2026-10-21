@@ -10,6 +10,7 @@ const layout = @import("layout.zig");
 const paint = @import("paint.zig");
 const font = @import("text/font.zig");
 const events = @import("events.zig");
+const anim = @import("anim.zig");
 const geom = @import("geom.zig");
 
 const Allocator = std.mem.Allocator;
@@ -33,6 +34,7 @@ pub const Ui = struct {
     layout: layout.Layout,
     dl: paint.DisplayList,
     ix: events.Interaction,
+    animator: anim.Animator,
     paint_hooks: paint.Hooks = .{},
     /// seconds, advanced by `tick`
     now: f64 = 0,
@@ -59,8 +61,12 @@ pub const Ui = struct {
             .layout = layout.Layout.init(gpa, doc, fonts),
             .dl = paint.DisplayList.init(gpa),
             .ix = undefined,
+            .animator = undefined,
         };
         ui.ix = events.Interaction.init(gpa, doc, &ui.layout, &ui.dl);
+        ui.animator = anim.Animator.init(gpa, doc, &ui.styles);
+        ui.styles.on_style_change = anim.Animator.onStyleChange;
+        ui.styles.on_style_change_ctx = &ui.animator;
         ui.layout.hooks = .{ .ctx = ui, .control_text = controlText };
         ui.paint_hooks = .{ .ctx = ui, .text_state = textState };
         doc.observer = observe;
@@ -118,6 +124,7 @@ pub const Ui = struct {
         ui.styles.deinit();
         ui.layout.deinit();
         ui.ix.deinit();
+        ui.animator.deinit();
         ui.dl.deinit();
         if (ui.owns_fonts) ui.fonts.deinit();
         gpa.destroy(ui);
@@ -168,13 +175,17 @@ pub const Ui = struct {
 
     /// Whether the host should keep producing frames (caret blink, animations).
     pub fn wantsFrames(ui: *const Ui) bool {
+        if (ui.animator.active()) return true;
         return ui.doc.focused != dom.null_id and ui.ix.edits.contains(ui.doc.focused);
     }
 
     /// Run style, layout and paint as needed. Returns true if a new frame is ready.
     pub fn update(ui: *Ui) !bool {
         ui.styles.setEnv(.{ .width = ui.width, .height = ui.height, .dark = ui.dark, .reduced_motion = ui.reduced_motion, .resolution = ui.scale });
+        ui.animator.now = if (ui.animator.now == 0) ui.now else ui.animator.now;
+        ui.animator.reduced_motion = ui.reduced_motion;
         _ = try ui.styles.update(ui.doc);
+        ui.animator.apply(ui.now);
         _ = try ui.layout.run(ui.width, ui.height);
         if (!ui.doc.needs_paint) return false;
         var painter = paint.Painter{ .doc = ui.doc, .L = &ui.layout, .dl = &ui.dl, .hooks = ui.paint_hooks, .scale = ui.scale };
@@ -274,4 +285,56 @@ test "wheel scrolls overflow containers" {
     try std.testing.expectEqual(@as(f32, 50), ui.doc.node(s).scroll_y);
     ui.ix.wheel(10, 10, 0, 1000, .{});
     try std.testing.expectEqual(@as(f32, 400), ui.doc.node(s).scroll_y);
+}
+
+test "css transitions and keyframes" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 } .b { width: 100px; height: 40px; opacity: 1; transition: opacity 1s linear, width 1s linear }
+        \\ .b.off { opacity: 0; width: 200px }
+        \\ @keyframes pulse { from { opacity: 1 } 50% { opacity: .2 } to { opacity: 1 } }
+        \\ .k { animation: pulse 2s linear infinite; width: 10px; height: 10px }</style>
+        \\<div class="b" id="b"></div><div class="k" id="k"></div>
+    );
+    defer ui.destroy();
+    const b = try style_mod.querySelector(ui.doc, ui.doc.root, "#b");
+    const k = try style_mod.querySelector(ui.doc, ui.doc.root, "#k");
+    try ui.doc.setAttribute(b, "class", "b off");
+    ui.tick(0.0);
+    _ = try ui.update();
+    ui.tick(0.5);
+    _ = try ui.update();
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), style_mod.of(ui.doc, b).opacity, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 150), layout.boxOfNode(ui.doc.node(b)).?.w, 0.5);
+    try std.testing.expect(ui.wantsFrames());
+    // keyframes at t=0.5s of 2s: halfway to the 50% keyframe -> 0.6
+    try std.testing.expectApproxEqAbs(@as(f32, 0.6), style_mod.of(ui.doc, k).opacity, 0.02);
+    // interrupt: go back; starts from the current value 0.5
+    try ui.doc.setAttribute(b, "class", "b");
+    _ = try ui.update();
+    ui.tick(1.0);
+    _ = try ui.update();
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), style_mod.of(ui.doc, b).opacity, 0.01);
+    ui.tick(2.0);
+    _ = try ui.update();
+    try std.testing.expectApproxEqAbs(@as(f32, 100), layout.boxOfNode(ui.doc.node(b)).?.w, 0.5);
+}
+
+test "springs" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 } .b { width: 10px; height: 10px }</style><div class="b" id="b"></div>
+    );
+    defer ui.destroy();
+    const b = try style_mod.querySelector(ui.doc, ui.doc.root, "#b");
+    try ui.animator.springTo(b, .opacity, .{ .num = 0 }, .{});
+    var t: f64 = 0;
+    while (t < 3) : (t += 1.0 / 60.0) {
+        ui.tick(t);
+        _ = try ui.update();
+    }
+    try std.testing.expect(!ui.animator.active());
+    try std.testing.expectApproxEqAbs(@as(f32, 0), style_mod.of(ui.doc, b).opacity, 0.001);
+    // the resting value survives restyles
+    ui.doc.markStyleDirty(b);
+    _ = try ui.update();
+    try std.testing.expectApproxEqAbs(@as(f32, 0), style_mod.of(ui.doc, b).opacity, 0.001);
 }
