@@ -113,6 +113,7 @@ export fn ebui_attach_wgpu_view(ui_id: u32, view: ?*anyopaque, dawn_path: ?[*:0]
     const surface = api.instanceCreateSurface(instance, &sd) orelse return false;
     if (dawn_ctx == null) dawn_ctx = wgpu.Context.createWithInstance(api, instance, surface) catch return false;
     const r = gpu.Renderer.init(gpa, api, dawn_ctx.?, ui.fonts, wgpu.TextureFormat.bgra8_unorm) catch return false;
+    r.store = &ui.images;
     const hv = gpa.create(View) catch return false;
     hv.* = .{ .ui_id = ui_id, .view = v, .surface = surface, .renderer = r, .start = now() };
     views.append(gpa, hv) catch return false;

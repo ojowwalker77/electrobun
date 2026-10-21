@@ -20,6 +20,8 @@ pub fn main(init: std.process.Init) !void {
 
     const ui = try ui_core.Ui.create(gpa, .{});
     defer ui.destroy();
+    ui.images.io = io;
+    try ui.images.setBaseDir(std.fs.path.dirname(input) orelse ".");
     try ui.setHtml(src);
     ui.resize(w, h, scale);
     const t0 = std.Io.Timestamp.now(io, .awake);
@@ -29,6 +31,7 @@ pub fn main(init: std.process.Init) !void {
 
     var renderer = ui_core.cpu.Renderer.init(gpa, ui.fonts);
     defer renderer.deinit();
+    renderer.store = &ui.images;
     var img = try ui_core.cpu.Image.init(gpa, @intFromFloat(w * scale), @intFromFloat(h * scale));
     defer img.deinit(gpa);
     try renderer.render(&ui.dl, &img, scale);

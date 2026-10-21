@@ -23,6 +23,8 @@ pub fn main(init: std.process.Init) !void {
 
     const ui = try ui_core.Ui.create(gpa, .{});
     defer ui.destroy();
+    ui.images.io = io;
+    try ui.images.setBaseDir(std.fs.path.dirname(input) orelse ".");
     try ui.setHtml(src);
     ui.resize(w, h, scale);
     _ = try ui.update();
@@ -33,6 +35,7 @@ pub fn main(init: std.process.Init) !void {
     const ctx = try wgpu.Context.create(api, null);
     const r = try ui_core.gpu.Renderer.init(gpa, api, ctx, ui.fonts, wgpu.TextureFormat.bgra8_unorm);
     defer r.deinit();
+    r.store = &ui.images;
     const pw: u32 = @intFromFloat(w * scale);
     const ph: u32 = @intFromFloat(h * scale);
     const t0 = std.Io.Timestamp.now(io, .awake);
@@ -53,6 +56,7 @@ pub fn main(init: std.process.Init) !void {
     // compare with the CPU renderer
     var cr = ui_core.cpu.Renderer.init(gpa, ui.fonts);
     defer cr.deinit();
+    cr.store = &ui.images;
     var cimg = try ui_core.cpu.Image.init(gpa, pw, ph);
     defer cimg.deinit(gpa);
     try cr.render(&ui.dl, &cimg, scale);

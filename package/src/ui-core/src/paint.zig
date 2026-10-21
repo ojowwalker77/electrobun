@@ -123,6 +123,8 @@ pub const Hooks = struct {
     image_for: ?*const fn (ctx: ?*anyopaque, url: []const u8) ?ImageRef = null,
     /// caret / selection for focused text controls
     text_state: ?*const fn (ctx: ?*anyopaque, node: NodeId) ?TextState = null,
+    /// rasterize an inline <svg> at a size (CSS px) with currentColor
+    svg_image: ?*const fn (ctx: ?*anyopaque, node: NodeId, w: f32, h: f32, color: Color) ?ImageRef = null,
     /// time in seconds for caret blinking
     caret_visible: bool = true,
 };
@@ -486,6 +488,12 @@ pub const Painter = struct {
             try p.dl.push(.{ .push_clip = .{ .rect = content, .radii = inner_radii } });
             try p.dl.push(.{ .image = .{ .rect = fit.dst, .radii = .{}, .image = img.id, .src = fit.src } });
             try p.dl.push(.pop_clip);
+            return;
+        }
+        if (n.tag == w.svg) {
+            const f = p.hooks.svg_image orelse return;
+            const img = f(p.hooks.ctx, it.node, content.w, content.h, st.color) orelse return;
+            try p.dl.push(.{ .image = .{ .rect = content, .radii = .{}, .image = img.id, .src = .{ .w = img.w, .h = img.h } } });
             return;
         }
         if (n.tag == w.webview or n.tag == w.wgpu or (doc.interner.lookup("video") != null and n.tag == doc.interner.lookup("video").?)) {

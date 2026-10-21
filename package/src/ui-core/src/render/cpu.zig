@@ -9,6 +9,7 @@ const font = @import("../text/font.zig");
 const style_mod = @import("../style.zig");
 const props = @import("../css/properties.zig");
 const sdf = @import("sdf.zig");
+const images = @import("../images.zig");
 
 const Allocator = std.mem.Allocator;
 const Rect = geom.Rect;
@@ -66,7 +67,7 @@ pub const Renderer = struct {
     gpa: Allocator,
     fonts: font.Backend,
     glyphs: std.AutoHashMapUnmanaged(GlyphKey, CachedGlyph) = .empty,
-    images: std.ArrayList(Image) = .empty,
+    store: ?*const images.Store = null,
 
     pub fn init(gpa: Allocator, fonts: font.Backend) Renderer {
         return .{ .gpa = gpa, .fonts = fonts };
@@ -76,16 +77,6 @@ pub const Renderer = struct {
         var it = r.glyphs.valueIterator();
         while (it.next()) |g| r.gpa.free(g.px);
         r.glyphs.deinit(r.gpa);
-        for (r.images.items) |*img| img.deinit(r.gpa);
-        r.images.deinit(r.gpa);
-    }
-
-    /// Register a premultiplied RGBA image; returns its id.
-    pub fn addImage(r: *Renderer, w: u32, h: u32, rgba_premul: []const u8) !u32 {
-        const img = try Image.init(r.gpa, w, h);
-        @memcpy(img.px, rgba_premul[0..img.px.len]);
-        try r.images.append(r.gpa, img);
-        return @intCast(r.images.items.len - 1);
     }
 
     fn glyph(r: *Renderer, fid: font.FontId, id: u32, scale: f32, subpx: f32) ?CachedGlyph {
@@ -390,8 +381,10 @@ const Ctx = struct {
     }
 
     fn drawImage(c: *Ctx, dst: Rect, radii: Corners, id: u32, src: Rect, opacity: f32) void {
-        if (id >= c.r.images.items.len) return;
-        const tex = &c.r.images.items[id];
+        const store = c.r.store orelse return;
+        const si = store.get(id) orelse return;
+        const tex_v = Image{ .w = si.w, .h = si.h, .px = si.px };
+        const tex = &tex_v;
         const b = c.deviceBounds(dst, 1) orelse return;
         const inv = c.xf().invert() orelse return;
         const s = scaleOf(inv);

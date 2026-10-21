@@ -11,6 +11,7 @@ const paint = @import("paint.zig");
 const font = @import("text/font.zig");
 const events = @import("events.zig");
 const anim = @import("anim.zig");
+const images = @import("images.zig");
 const geom = @import("geom.zig");
 
 const Allocator = std.mem.Allocator;
@@ -35,6 +36,7 @@ pub const Ui = struct {
     dl: paint.DisplayList,
     ix: events.Interaction,
     animator: anim.Animator,
+    images: images.Store,
     paint_hooks: paint.Hooks = .{},
     /// seconds, advanced by `tick`
     now: f64 = 0,
@@ -62,13 +64,14 @@ pub const Ui = struct {
             .dl = paint.DisplayList.init(gpa),
             .ix = undefined,
             .animator = undefined,
+            .images = images.Store.init(gpa),
         };
         ui.ix = events.Interaction.init(gpa, doc, &ui.layout, &ui.dl);
         ui.animator = anim.Animator.init(gpa, doc, &ui.styles);
         ui.styles.on_style_change = anim.Animator.onStyleChange;
         ui.styles.on_style_change_ctx = &ui.animator;
-        ui.layout.hooks = .{ .ctx = ui, .control_text = controlText };
-        ui.paint_hooks = .{ .ctx = ui, .text_state = textState };
+        ui.layout.hooks = .{ .ctx = ui, .control_text = controlText, .natural_size = naturalSize };
+        ui.paint_hooks = .{ .ctx = ui, .text_state = textState, .image_for = imageFor, .svg_image = svgImage };
         doc.observer = observe;
         doc.observer_ctx = ui;
         return ui;
@@ -90,6 +93,28 @@ pub const Ui = struct {
         const buf = a.alloc(u8, n * 3) catch return "";
         for (0..n) |i| @memcpy(buf[i * 3 ..][0..3], "\u{2022}");
         return buf;
+    }
+
+    fn naturalSize(ctx: ?*anyopaque, doc: *dom.Document, node: dom.NodeId) ?[2]f32 {
+        const ui: *Ui = @ptrCast(@alignCast(ctx.?));
+        const src = doc.node(node).getAttr(doc.atoms.src) orelse return null;
+        const id = ui.images.load(src) orelse return null;
+        const img = ui.images.get(id).?;
+        return .{ img.css_w, img.css_h };
+    }
+
+    fn imageFor(ctx: ?*anyopaque, url: []const u8) ?paint.ImageRef {
+        const ui: *Ui = @ptrCast(@alignCast(ctx.?));
+        const id = ui.images.load(url) orelse return null;
+        const img = ui.images.get(id).?;
+        return .{ .id = id, .w = @floatFromInt(img.w), .h = @floatFromInt(img.h) };
+    }
+
+    fn svgImage(ctx: ?*anyopaque, node: dom.NodeId, w: f32, h: f32, color: geom.Color) ?paint.ImageRef {
+        const ui: *Ui = @ptrCast(@alignCast(ctx.?));
+        const id = ui.images.svgImage(ui.doc, node, w, h, ui.scale, color) orelse return null;
+        const img = ui.images.get(id).?;
+        return .{ .id = id, .w = @floatFromInt(img.w), .h = @floatFromInt(img.h) };
     }
 
     fn textState(ctx: ?*anyopaque, node: dom.NodeId) ?paint.TextState {
@@ -125,6 +150,7 @@ pub const Ui = struct {
         ui.layout.deinit();
         ui.ix.deinit();
         ui.animator.deinit();
+        ui.images.deinit();
         ui.dl.deinit();
         if (ui.owns_fonts) ui.fonts.deinit();
         gpa.destroy(ui);

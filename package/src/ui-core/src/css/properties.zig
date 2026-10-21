@@ -1130,6 +1130,7 @@ const Parser = struct {
         var n: usize = 0;
         while (!s.atEnd() and n < 3) : (n += 1) {
             const t = s.peek();
+            if (t.tag == .delim or t.tag == .comma) break;
             if (t.tag == .ident) {
                 _ = s.next();
                 if (eq(t.text, "left")) x = .{ .pct = 0 } else if (eq(t.text, "right")) x = .{ .pct = 1 } else if (eq(t.text, "top")) y = .{ .pct = 0 } else if (eq(t.text, "bottom")) y = .{ .pct = 1 } else if (eq(t.text, "center")) {

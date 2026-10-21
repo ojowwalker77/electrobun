@@ -101,6 +101,8 @@ pub const Window = struct {
             .io = io,
         };
         w.renderer = try gpu.Renderer.init(gpa, api, ctx, ui.fonts, w.format);
+        w.renderer.store = &ui.images;
+        ui.images.io = io;
         w.start = w.clock();
         ui.ix.host = .{
             .ctx = w,

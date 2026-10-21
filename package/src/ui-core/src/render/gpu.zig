@@ -10,6 +10,7 @@ const paint = @import("../paint.zig");
 const font = @import("../text/font.zig");
 const style_mod = @import("../style.zig");
 const sdf = @import("sdf.zig");
+const images_mod = @import("../images.zig");
 
 const Allocator = std.mem.Allocator;
 const Rect = geom.Rect;
@@ -128,7 +129,8 @@ pub const Renderer = struct {
     lut_rows: u32 = 0,
     lut_data: std.ArrayList(u8) = .empty,
     dummy: ImageTex,
-    images: std.ArrayList(?ImageTex) = .empty,
+    store: ?*const images_mod.Store = null,
+    textures: std.AutoHashMapUnmanaged(u32, struct { tex: ImageTex, version: u32 }) = .empty,
 
     /// target 0 = main offscreen; others are layer textures
     targets: std.ArrayList(Target) = .empty,
@@ -250,8 +252,9 @@ pub const Renderer = struct {
         for (r.targets.items) |t| releaseTarget(api, t);
         r.targets.deinit(r.gpa);
         r.free_layers.deinit(r.gpa);
-        for (r.images.items) |maybe| if (maybe) |img| releaseImage(api, img);
-        r.images.deinit(r.gpa);
+        var tit = r.textures.valueIterator();
+        while (tit.next()) |t| releaseImage(api, t.tex);
+        r.textures.deinit(r.gpa);
         releaseImage(api, r.dummy);
         r.glyphs.deinit(r.gpa);
         r.prims.deinit(r.gpa);
@@ -296,18 +299,17 @@ pub const Renderer = struct {
         return .{ .tex = tex, .view = view, .bind = bind, .w = w, .h = h };
     }
 
-    /// Register a premultiplied RGBA image; returns its id (shared id space
-    /// with the CPU renderer when the host registers images in both).
-    pub fn addImage(r: *Renderer, w: u32, h: u32, rgba_premul: []const u8) !u32 {
-        const img = try r.createImageTex(w, h, rgba_premul);
-        try r.images.append(r.gpa, img);
-        return @intCast(r.images.items.len - 1);
-    }
-
-    pub fn removeImage(r: *Renderer, id: u32) void {
-        if (id >= r.images.items.len) return;
-        if (r.images.items[id]) |img| releaseImage(r.api, img);
-        r.images.items[id] = null;
+    /// GPU texture for a store image, uploading on first use or change.
+    fn textureFor(r: *Renderer, id: u32) ?ImageTex {
+        const store = r.store orelse return null;
+        const img = store.get(id) orelse return null;
+        if (r.textures.get(id)) |t| {
+            if (t.version == img.version) return t.tex;
+            releaseImage(r.api, t.tex);
+        }
+        const tex = r.createImageTex(img.w, img.h, img.px) catch return null;
+        r.textures.put(r.gpa, id, .{ .tex = tex, .version = img.version }) catch return null;
+        return tex;
     }
 
     fn ensureTargets(r: *Renderer, w: u32, h: u32) !void {
@@ -608,8 +610,7 @@ pub const Renderer = struct {
                 }
             },
             .image => |c| {
-                if (c.image >= r.images.items.len) continue;
-                const img = r.images.items[c.image] orelse continue;
+                const img = r.textureFor(c.image) orelse continue;
                 try b.setBind(img.bind);
                 const iw: f32 = @floatFromInt(img.w);
                 const ih: f32 = @floatFromInt(img.h);

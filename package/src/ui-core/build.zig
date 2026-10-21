@@ -105,5 +105,6 @@ pub fn linkPlatform(mod: *std.Build.Module, target: std.Build.ResolvedTarget) vo
         mod.linkFramework("CoreText", .{});
         mod.linkFramework("CoreGraphics", .{});
         mod.linkFramework("CoreFoundation", .{});
+        mod.linkFramework("ImageIO", .{});
     }
 }

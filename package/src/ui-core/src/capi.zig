@@ -86,6 +86,30 @@ pub const Instance = struct {
 
 var instances: std.ArrayList(?*Instance) = .empty;
 
+var io_state: ?std.Io.Threaded = null;
+fn coreIo() std.Io {
+    if (io_state == null) io_state = std.Io.Threaded.init(gpa, .{});
+    return io_state.?.io();
+}
+
+/// Directory that relative image URLs resolve against (e.g. app resources).
+export fn ebui_set_base_dir(id: u32, dir: ?[*]const u8, len: usize) void {
+    lock();
+    defer unlock();
+    const inst = get(id) orelse return;
+    inst.ui.images.setBaseDir(span(dir, len)) catch {};
+}
+
+/// Register premultiplied RGBA pixels; returns an image id usable as
+/// `src="image:<id>"`.
+export fn ebui_add_image(id: u32, w: u32, h: u32, px: ?[*]const u8) u32 {
+    lock();
+    defer unlock();
+    const inst = get(id) orelse return 0;
+    const p = px orelse return 0;
+    return inst.ui.images.addPixels(w, h, p[0 .. @as(usize, w) * h * 4]) catch 0;
+}
+
 fn get(id: u32) ?*Instance {
     if (id == 0 or id >= instances.items.len) return null;
     return instances.items[id];
@@ -118,6 +142,7 @@ export fn ebui_create() u32 {
     };
     inst.mounter = .{ .gpa = gpa, .ui = ui, .rt = &inst.rt, .components = &inst.registry };
     ui.ix.sink = null;
+    ui.images.io = coreIo();
     instances.append(gpa, inst) catch return 0;
     _ = html.ensureBody(ui.doc) catch {};
     inst.id = @intCast(instances.items.len - 1);

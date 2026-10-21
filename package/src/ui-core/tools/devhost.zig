@@ -69,6 +69,7 @@ pub fn main(init: std.process.Init) !void {
     var state = State{ .path = path orelse return error.Usage, .io = init.io, .gpa = gpa, .shot = shot };
     const ui = try ui_core.Ui.create(gpa, .{});
     defer ui.destroy();
+    try ui.images.setBaseDir(std.fs.path.dirname(state.path) orelse ".");
     const win = try host.Window.create(gpa, init.io, ui, .{ .title = "Electrobun UI — devhost", .width = w, .height = h, .dawn_path = dawn, .on_frame = onFrame, .ctx = &state });
     win.run();
 }
