@@ -82,8 +82,10 @@ pub const InlineLayout = struct {
     }
 
     /// Caret rectangle (IFC coordinates) for a byte offset in `node`'s text.
-    pub fn caretAt(il: *const InlineLayout, node: NodeId, offset: u32) ?struct { x: f32, y: f32, h: f32 } {
-        var best: ?struct { x: f32, y: f32, h: f32 } = null;
+    pub const Caret = struct { x: f32, y: f32, h: f32 };
+
+    pub fn caretAt(il: *const InlineLayout, node: NodeId, offset: u32) ?Caret {
+        var best: ?Caret = null;
         for (il.frags) |f| {
             if (f.kind != .text or f.item.node != node or f.ellipsis) continue;
             if (offset < f.text_start or offset > f.text_end) continue;
@@ -93,13 +95,13 @@ pub const InlineLayout = struct {
                 x = f.x + g.x + g.advance;
             }
             const line = il.lines[f.line];
-            const r = .{ .x = x, .y = line.y, .h = line.h };
+            const r = Caret{ .x = x, .y = line.y, .h = line.h };
             if (offset < f.text_end) return r;
             best = r;
         }
         if (best == null and il.lines.len > 0) {
             const l = il.lines[0];
-            return .{ .x = l.x, .y = l.y, .h = l.h };
+            return Caret{ .x = l.x, .y = l.y, .h = l.h };
         }
         return best;
     }

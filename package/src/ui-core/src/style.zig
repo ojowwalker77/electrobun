@@ -327,13 +327,15 @@ pub fn get(n: *const Node) ?*NodeStyle {
     return @ptrCast(@alignCast(n.style));
 }
 
-/// Style for a node; text nodes use their parent element's style.
+/// Computed style of a node. Text nodes have an anonymous style holding the
+/// inherited properties of their parent.
 pub fn of(doc: *const Document, id: NodeId) *const Style {
     var n = doc.node(id);
-    if (n.kind != .element) {
-        if (n.parent != null_id) n = doc.node(n.parent);
-    }
     if (get(n)) |ns| return &ns.s;
+    if (n.kind != .element and n.parent != null_id) {
+        n = doc.node(n.parent);
+        if (get(n)) |ns| return &ns.s;
+    }
     return &default_style;
 }
 
@@ -513,6 +515,17 @@ pub const Engine = struct {
     fn visit(e: *Engine, doc: *Document, id: NodeId, parent: ?*const NodeStyle, force: bool, deep: bool) Allocator.Error!void {
         const n = doc.node(id);
         if (n.kind != .element) {
+            // text nodes get an anonymous-box style: inherited values only
+            if (n.kind == .text and (force or deep or n.flags.style_dirty or n.style == null)) {
+                if (parent) |p| {
+                    const old = get(n);
+                    const ns = try e.gpa.create(NodeStyle);
+                    ns.* = .{ .s = inheritFrom(&p.s), .arena = std.heap.ArenaAllocator.init(e.gpa) };
+                    ns.s.display = .inline_;
+                    n.style = ns;
+                    if (old) |o| destroyNodeStyle(e.gpa, o);
+                }
+            }
             n.flags.style_dirty = false;
             n.flags.child_style_dirty = false;
             n.flags.force_subtree = false;

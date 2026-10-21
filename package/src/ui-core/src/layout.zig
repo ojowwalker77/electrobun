@@ -1971,3 +1971,19 @@ test "incremental relayout" {
     // only the dirty path is recomputed
     try std.testing.expect(t.L.cache_hits > 0);
 }
+
+test "abs flex container centers text; code is monospace" {
+    const t = try TestDoc.init(
+        \\<style>body { margin: 0; font-size: 10px; line-height: 10px } .rel { position: relative; width: 200px; height: 100px }
+        \\ .p { position: absolute; left: 0; top: 0; width: 100px; height: 50px; display: flex; align-items: center; justify-content: center }</style>
+        \\<div class="rel"><div class="p" id="p">abcd</div></div><p><span>x <code id="c">y</code></span></p>
+    , 400, 300);
+    defer t.deinit();
+    const p = t.q("#p");
+    const text = t.doc.node(p).first_child;
+    const tb = boxOfNode(t.doc.node(text)).?;
+    try std.testing.expectApproxEqAbs(@as(f32, 40), tb.x, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 20), tb.y, 0.01);
+    const cs = style_mod.of(t.doc, t.q("#c"));
+    try std.testing.expectEqualStrings("monospace", cs.font_family[0]);
+}
