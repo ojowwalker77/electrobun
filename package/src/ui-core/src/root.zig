@@ -14,6 +14,8 @@ pub const wgpu = @import("render/wgpu.zig");
 pub const gpu = @import("render/gpu.zig");
 pub const events = @import("events.zig");
 pub const anim = @import("anim.zig");
+pub const reactive = @import("reactive.zig");
+pub const template = @import("template.zig");
 pub const ui = @import("ui.zig");
 pub const Ui = ui.Ui;
 pub const host_macos = if (@import("builtin").os.tag == .macos) @import("host/macos.zig") else struct {};
