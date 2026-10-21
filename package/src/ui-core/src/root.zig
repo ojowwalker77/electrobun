@@ -10,6 +10,7 @@ pub const grid = @import("grid.zig");
 pub const paint = @import("paint.zig");
 pub const sdf = @import("render/sdf.zig");
 pub const cpu = @import("render/cpu.zig");
+pub const events = @import("events.zig");
 pub const ui = @import("ui.zig");
 pub const Ui = ui.Ui;
 pub const coretext = if (@import("builtin").os.tag == .macos) @import("text/coretext.zig") else struct {};

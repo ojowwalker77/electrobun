@@ -56,9 +56,21 @@ pub const Cmd = union(enum) {
     pop_transform,
 };
 
+pub const HitRegion = struct {
+    node: NodeId,
+    rect: Rect,
+    radii: Corners,
+    /// intersection of active overflow clips (same space as `rect`)
+    clip: Rect,
+    /// maps window coordinates into the region's coordinate space
+    inv: geom.Transform,
+};
+
 pub const DisplayList = struct {
     arena: std.heap.ArenaAllocator,
     cmds: std.ArrayList(Cmd) = .empty,
+    /// hit-test regions in paint order (last = topmost)
+    hits: std.ArrayList(HitRegion) = .empty,
     /// hit regions for native-surface anchoring
     surfaces: std.ArrayList(struct { node: NodeId, rect: Rect }) = .empty,
     /// window drag regions (app-region: drag)
@@ -77,6 +89,7 @@ pub const DisplayList = struct {
     pub fn reset(dl: *DisplayList) void {
         _ = dl.arena.reset(.retain_capacity);
         dl.cmds = .empty;
+        dl.hits = .empty;
         dl.surfaces = .empty;
         dl.drag_regions = .empty;
         dl.no_drag_regions = .empty;
@@ -86,6 +99,21 @@ pub const DisplayList = struct {
     }
     pub fn push(dl: *DisplayList, c: Cmd) !void {
         try dl.cmds.append(dl.a(), c);
+    }
+
+    /// Topmost node under a window-space point.
+    pub fn hitTest(dl: *const DisplayList, x: f32, y: f32) NodeId {
+        var i = dl.hits.items.len;
+        while (i > 0) {
+            i -= 1;
+            const h = dl.hits.items[i];
+            const p = h.inv.apply(.{ .x = x, .y = y });
+            if (!h.clip.contains(p)) continue;
+            if (!h.rect.contains(p)) continue;
+            if (!h.radii.isZero() and @import("render/sdf.zig").roundedRect(p.x, p.y, h.rect, h.radii) > 0) continue;
+            return h.node;
+        }
+        return null_id;
     }
 };
 
@@ -151,6 +179,23 @@ pub const Painter = struct {
 
     fn a(p: *Painter) Allocator {
         return p.dl.arena.allocator();
+    }
+
+    fn currentInverse(p: *Painter) geom.Transform {
+        var t = geom.Transform.identity;
+        for (p.transforms.items) |x| t = x.then(t);
+        return t.invert() orelse geom.Transform.identity;
+    }
+
+    fn currentClip(p: *Painter) Rect {
+        var r = Rect{ .x = -1e9, .y = -1e9, .w = 2e9, .h = 2e9 };
+        for (p.clips.items) |c| r = r.intersect(c.rect);
+        return r;
+    }
+
+    fn addHit(p: *Painter, node: NodeId, st: *const Style, r: Rect, radii: Corners) !void {
+        if (st.pointer_events == .none or st.visibility != .visible) return;
+        try p.dl.hits.append(p.a(), .{ .node = node, .rect = r, .radii = radii, .clip = p.currentClip(), .inv = p.currentInverse() });
     }
 
     fn createsStackingContext(st: *const Style, is_root: bool) bool {
@@ -267,6 +312,7 @@ pub const Painter = struct {
         const is_root = it.pseudo == .none and it.node == doc.documentElement();
         const is_body = it.pseudo == .none and doc.node(it.node).tag == doc.atoms.body and doc.node(it.node).parent == doc.documentElement();
 
+        if (it.pseudo == .none) try p.addHit(it.node, st, bb, radii) else try p.addHit(it.node, st, bb, radii);
         if (visible) {
             // background propagated to the canvas is not painted again
             const skip_bg = is_root or (is_body and style_mod.of(doc, doc.documentElement()).background_color.a == 0);
@@ -614,6 +660,7 @@ pub const Painter = struct {
                 } } });
             }
             if (st.app_region == .drag) try p.dl.drag_regions.append(p.a(), r);
+            if (f.item.pseudo == .none) try p.addHit(f.item.node, st, r, radii);
         }
         // atomic inlines and text, in order
         for (il.frags) |f| {
@@ -621,6 +668,12 @@ pub const Painter = struct {
                 .text => {
                     const st = f.style;
                     if (st.visibility != .visible) continue;
+                    {
+                        // text hits resolve to the element containing the text
+                        var hn = f.item.node;
+                        if (doc.node(hn).kind == .text) hn = doc.node(hn).parent;
+                        try p.addHit(hn, st, .{ .x = ox + f.x, .y = oy + p.lineTop(il, f), .w = f.w, .h = il.lines[f.line].h }, .{});
+                    }
                     const n_glyphs = f.glyph_end - f.glyph_start;
                     if (n_glyphs == 0) continue;
                     const out = try p.a().alloc(GlyphInstance, n_glyphs);
@@ -641,12 +694,16 @@ pub const Painter = struct {
                         try p.defer_(deferred, f.item, kst, parent_x, parent_y);
                         continue;
                     }
-                    _ = doc;
                     try p.paintElement(f.item, kst, kb, parent_x + kb.x + kb.rel_x, parent_y + kb.y + kb.rel_y, deferred, false);
                 },
                 .inline_box => {},
             }
         }
+    }
+
+    fn lineTop(p: *Painter, il: *const inline_mod.InlineLayout, f: inline_mod.Frag) f32 {
+        _ = p;
+        return il.lines[f.line].y;
     }
 
     fn paintDecorations(p: *Painter, f: inline_mod.Frag, st: *const Style, ox: f32, oy: f32) !void {
