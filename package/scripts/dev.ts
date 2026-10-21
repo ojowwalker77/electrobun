@@ -64,6 +64,8 @@ export function createDevCommands({
 			cwd: kitchenDir,
 			env: {
 				HUTCH_ELECTROBUN_DEVKIT_ROOT: join(packageDir, "dist"),
+				// native UI library (until Hutch bundles it via bundleUI)
+				ELECTROBUN_UI_PATH: join(packageDir, "dist", process.platform === "win32" ? "ElectrobunUI.dll" : process.platform === "darwin" ? "libElectrobunUI.dylib" : "libElectrobunUI.so"),
 			},
 		},
 	);

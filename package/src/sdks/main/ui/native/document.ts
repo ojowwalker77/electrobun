@@ -359,9 +359,12 @@ export class NativeElement extends NativeNode {
 
 	// ---- form control properties ----
 	get value(): string {
+		if (this.localName === "option") return this.getAttribute("value") ?? this.textContent;
 		return this.ownerDocument.readValue(this);
 	}
 	set value(v: string) {
+		// <option>.value reflects its attribute, which <select> reads
+		if (this.localName === "option") return this.setAttribute("value", String(v ?? ""));
 		this.ownerDocument.cmd(Op.setValue).u32(this.id);
 		this.ownerDocument.buf.str(v == null ? "" : String(v));
 		this.ownerDocument.valueCache.set(this.id, String(v ?? ""));
@@ -372,6 +375,12 @@ export class NativeElement extends NativeNode {
 	set checked(on: boolean) {
 		if (on) this.setAttribute("checked", "");
 		else this.removeAttribute("checked");
+	}
+	set selected(on: boolean) {
+		this.toggleAttribute("selected", !!on);
+	}
+	get selected(): boolean {
+		return this.hasAttribute("selected");
 	}
 	set disabled(on: boolean) {
 		this.toggleAttribute("disabled", !!on);

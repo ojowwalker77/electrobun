@@ -61,6 +61,15 @@ export const uiSymbols = {
 	ebui_template_compile: { args: [u32, ptr, usize], returns: u32 },
 	ebui_template_mount: { args: [u32, u32, u32, u32, u32], returns: u32 },
 	ebui_pointer: { args: [u32, u8, f32, f32, u8, u8], returns: v },
+	ebui_wheel: { args: [u32, f32, f32, f32, f32, u8], returns: v },
+	ebui_key: { args: [u32, bool, ptr, usize, u8], returns: v },
+	ebui_text_input: { args: [u32, ptr, usize], returns: v },
+	ebui_use_components: { args: [u32], returns: FFIType.u64_fast },
+	ebui_host_frames: { args: [u32], returns: FFIType.u64_fast },
+	ebui_request_capture: { args: [u32], returns: v },
+	ebui_capture_ready: { args: [u32], returns: bool },
+	ebui_capture_pixel: { args: [u32, f32, f32, ptr], returns: bool },
+	ebui_a11y_dump: { args: [u32, ptr], returns: ptr },
 } as const;
 
 type UiLib = ReturnType<typeof dlopen<typeof uiSymbols>>;

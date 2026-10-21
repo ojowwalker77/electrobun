@@ -179,8 +179,9 @@
 .eb-nav { display: flex; flex-direction: column; gap: 2px; }
 .eb-nav-item { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: 7px; color: var(--eb-muted); cursor: pointer;
   transition: background-color .12s, color .12s; }
+button.eb-nav-item { width: 100%; height: auto; border: none; background: transparent; font: inherit; text-align: left; }
 .eb-nav-item:hover { background: var(--eb-secondary); color: var(--eb-fg); }
-.eb-nav-item.active { background: var(--eb-accent); color: var(--eb-accent-fg); font-weight: 500; }
+.eb-nav-item.active, .eb-nav-item[aria-current="page"] { background: var(--eb-accent); color: var(--eb-accent-fg); font-weight: 500; }
 .eb-nav-item svg { width: 16px; height: 16px; }
 .eb-breadcrumb { display: flex; gap: 6px; align-items: center; color: var(--eb-muted); font-size: 13px; }
 .eb-breadcrumb > :last-child { color: var(--eb-fg); }

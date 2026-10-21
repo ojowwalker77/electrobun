@@ -1055,6 +1055,28 @@ export fn ebui_composition(id: u32, text: ?[*]const u8, len: usize, sel: u32) vo
     inst.ui.ix.setComposition(span(text, len), sel);
 }
 
+/// Accessibility tree as text lines "role|name|value|flags" (tests, debugging).
+export fn ebui_a11y_dump(id: u32, out_len: *usize) ?[*]const u8 {
+    lock();
+    defer unlock();
+    const inst = get(id) orelse return null;
+    _ = inst.ui.update() catch {};
+    const a11y = @import("a11y.zig");
+    const tree = a11y.build(gpa, inst.ui) catch return null;
+    defer {
+        tree.deinit();
+        gpa.destroy(tree);
+    }
+    inst.string_out.clearRetainingCapacity();
+    var w = std.Io.Writer.Allocating.fromArrayList(gpa, &inst.string_out);
+    for (tree.nodes.items) |n| {
+        w.writer.print("{s}|{s}|{s}|{s}{s}{s}\n", .{ @tagName(n.role), n.name, n.value, if (n.state.checked) "checked " else "", if (n.state.focused) "focused " else "", if (n.state.disabled) "disabled" else "" }) catch break;
+    }
+    inst.string_out = w.toArrayList();
+    out_len.* = inst.string_out.items.len;
+    return inst.string_out.items.ptr;
+}
+
 /// Serialize a subtree as HTML (debugging, tests). Valid until the next call.
 export fn ebui_serialize(id: u32, node: u32, out_len: *usize) ?[*]const u8 {
     lock();

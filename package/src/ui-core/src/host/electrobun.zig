@@ -82,6 +82,12 @@ const View = struct {
     a11y_active: bool = false,
     a11y_version: u64 = 0,
     a11y_time: f64 = 0,
+    /// presented frames (tests)
+    frames: u64 = 0,
+    capture_requested: bool = false,
+    capture: ?[]u8 = null,
+    capture_w: u32 = 0,
+    capture_h: u32 = 0,
 };
 
 var views: std.ArrayList(*View) = .empty;
@@ -298,9 +304,16 @@ fn onFrame(ctx: ?*anyopaque, t: f64) callconv(.c) void {
     }
     ui.tick(now() - hv.start);
     const changed = ui.update() catch false;
-    if (changed or hv.force) {
+    if (changed or hv.force or hv.capture_requested) {
         hv.force = false;
         render(hv, ui) catch |e| std.log.err("ebui render: {}", .{e});
+        if (hv.capture_requested) {
+            hv.capture_requested = false;
+            if (hv.capture) |c| gpa.free(c);
+            hv.capture = hv.renderer.readPixels(gpa) catch null;
+            hv.capture_w = hv.px_w;
+            hv.capture_h = hv.px_h;
+        }
     }
     if (hv.a11y_active and ui.doc.version != hv.a11y_version and now() - hv.a11y_time > 0.1) pushA11y(hv, ui);
     if (ui.wantsFrames()) n.requestFrame(hv.view);
@@ -357,6 +370,50 @@ fn render(hv: *View, ui: *ui_mod.Ui) !void {
     defer api.textureViewRelease(view);
     try hv.renderer.present(view);
     _ = api.surfacePresent(hv.surface);
+    hv.frames += 1;
+}
+
+// ---------------------------------------------------------------------------
+// Test hooks
+// ---------------------------------------------------------------------------
+
+export fn ebui_host_frames(ui_id: u32) u64 {
+    capi.lock();
+    defer capi.unlock();
+    const hv = viewFor(ui_id) orelse return 0;
+    return hv.frames;
+}
+
+/// Ask the next frame to read back its pixels (see ebui_capture_pixel).
+export fn ebui_request_capture(ui_id: u32) void {
+    capi.lock();
+    defer capi.unlock();
+    const hv = viewFor(ui_id) orelse return;
+    if (hv.capture) |c| gpa.free(c);
+    hv.capture = null;
+    hv.capture_requested = true;
+    if (native) |n| n.requestFrame(hv.view);
+}
+
+export fn ebui_capture_ready(ui_id: u32) bool {
+    capi.lock();
+    defer capi.unlock();
+    const hv = viewFor(ui_id) orelse return false;
+    return hv.capture != null;
+}
+
+/// RGBA (premultiplied) of the captured frame at a point in CSS px.
+export fn ebui_capture_pixel(ui_id: u32, x: f32, y: f32, out: *[4]u8) bool {
+    capi.lock();
+    defer capi.unlock();
+    const hv = viewFor(ui_id) orelse return false;
+    const px = hv.capture orelse return false;
+    const dx: u32 = @intFromFloat(@max(0, x * hv.scale));
+    const dy: u32 = @intFromFloat(@max(0, y * hv.scale));
+    if (dx >= hv.capture_w or dy >= hv.capture_h) return false;
+    const i = (@as(usize, dy) * hv.capture_w + dx) * 4;
+    out.* = px[i..][0..4].*;
+    return true;
 }
 
 fn setCursor(ctx: ?*anyopaque, c: events.Cursor) void {
