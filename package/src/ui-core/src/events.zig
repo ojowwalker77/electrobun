@@ -244,21 +244,30 @@ pub const Interaction = struct {
     pub fn dispatch(ix: *Interaction, ev: *Event) bool {
         if (ev.target == null_id or ix.doc.get(ev.target) == null) return true;
         if (ix.sink) |s| s(ix.sink_ctx, ev);
+        // the propagation path is fixed before any listener runs (DOM semantics):
+        // listeners may mutate or destroy the tree
+        var path_buf: [256]NodeId = undefined;
+        var n_path: usize = 0;
         var cur = ev.target;
-        while (cur != null_id) {
+        while (cur != null_id and n_path < path_buf.len) {
             const n = ix.doc.get(cur) orelse break;
+            if (n.kind == .document) break;
+            path_buf[n_path] = cur;
+            n_path += 1;
+            if (!ev.type.bubbles()) break;
+            cur = n.parent;
+        }
+        for (path_buf[0..n_path]) |id| {
+            const n = ix.doc.get(id) orelse continue;
             if (n.listeners & ev.type.mask() != 0) {
-                ev.current_target = cur;
-                // listeners may add/remove listeners: iterate by index over a snapshot length
+                ev.current_target = id;
                 var i: usize = 0;
                 while (i < ix.listeners.items.len) : (i += 1) {
                     const l = ix.listeners.items[i];
-                    if (l.node == cur and l.type == ev.type) l.func(l.ctx, ev);
+                    if (l.node == id and l.type == ev.type) l.func(l.ctx, ev);
                 }
             }
-            if (!ev.type.bubbles() or ev.propagation_stopped) break;
-            cur = n.parent;
-            if (cur != null_id and ix.doc.node(cur).kind == .document) break;
+            if (ev.propagation_stopped) break;
         }
         return !ev.default_prevented;
     }
@@ -473,6 +482,8 @@ pub const Interaction = struct {
             _ = ix.dispatch(&dbl);
         }
         if (!ix.dispatch(&ev)) return;
+        // the click handler may have removed the target
+        if (ix.doc.get(target) == null) return;
         ix.activationBehavior(target);
     }
 
@@ -481,7 +492,7 @@ pub const Interaction = struct {
         const w = &doc.atoms;
         var cur = target;
         while (cur != null_id) : (cur = doc.node(cur).parent) {
-            const n = doc.node(cur);
+            const n = doc.get(cur) orelse return;
             if (n.kind != .element) continue;
             if (n.tag == w.input) {
                 if (n.hasAttr(w.disabled)) return;

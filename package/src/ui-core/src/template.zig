@@ -400,13 +400,20 @@ pub const CallArgs = struct {
 };
 
 fn callHandler(rt: *Runtime, scope: ScopeId, name: []const []const u8, arg_exprs: []const *const Expr, ev: ?*events.Event, scratch: Allocator) void {
-    const r = rt.lookup(scope, name[name.len - 1]) orelse return;
+    // `item.method`: resolve the prefix to the item's scope
+    var sid = scope;
+    for (name[0 .. name.len - 1]) |seg| {
+        const v = rt.scopeValue(sid, seg);
+        if (v != .scope) return;
+        sid = v.scope;
+    }
+    const r = rt.lookup(sid, name[name.len - 1]) orelse return;
     if (r.slot != .handler) return;
     var vals: [8]Value = undefined;
     const n = @min(arg_exprs.len, vals.len);
     for (arg_exprs[0..n], 0..) |ae, i| vals[i] = eval(rt, scope, ae, scratch);
     var args = CallArgs{ .event = ev, .args = vals[0..n] };
-    r.slot.handler.func(r.slot.handler.ctx, rt, scope, &args);
+    r.slot.handler.func(r.slot.handler.ctx, rt, sid, &args);
 }
 
 // ---------------------------------------------------------------------------
