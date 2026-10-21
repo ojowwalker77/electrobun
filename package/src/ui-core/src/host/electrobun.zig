@@ -10,6 +10,7 @@ const events = @import("../events.zig");
 const wgpu = @import("../render/wgpu.zig");
 const gpu = @import("../render/gpu.zig");
 const geom = @import("../geom.zig");
+const a11y = @import("../a11y.zig");
 
 const gpa = std.heap.c_allocator;
 
@@ -17,6 +18,8 @@ const PointerCb = *const fn (?*anyopaque, u32, f64, f64, f64, f64, u32) callconv
 const KeyCb = *const fn (?*anyopaque, u32, u32, u32, u32, [*:0]const u8, [*:0]const u8) callconv(.c) u32;
 const TextCb = *const fn (?*anyopaque, u32, [*:0]const u8, u32) callconv(.c) void;
 const FrameCb = *const fn (?*anyopaque, f64) callconv(.c) void;
+const A11yRequestCb = *const fn (?*anyopaque) callconv(.c) void;
+const A11yActionCb = *const fn (?*anyopaque, u32, u32, [*:0]const u8) callconv(.c) void;
 
 const Native = struct {
     setUIHandlers: *const fn (?*anyopaque, ?*anyopaque, ?PointerCb, ?KeyCb, ?TextCb, ?FrameCb) callconv(.c) void,
@@ -26,6 +29,8 @@ const Native = struct {
     getNativeHandle: *const fn (?*anyopaque) callconv(.c) ?*anyopaque,
     beginWindowDrag: *const fn (?*anyopaque) callconv(.c) void,
     setCursor: *const fn ([*:0]const u8) callconv(.c) void,
+    setA11yHandlers: ?*const fn (?*anyopaque, ?*anyopaque, ?A11yRequestCb, ?A11yActionCb) callconv(.c) void,
+    setA11yTree: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
     clipboardReadText: ?*const fn () callconv(.c) ?[*:0]const u8,
     clipboardWriteText: ?*const fn ([*:0]const u8) callconv(.c) void,
 };
@@ -49,6 +54,8 @@ fn loadNative() ?Native {
         .getNativeHandle = sym(@FieldType(Native, "getNativeHandle"), "wgpuViewGetNativeHandle") orelse return null,
         .beginWindowDrag = sym(@FieldType(Native, "beginWindowDrag"), "wgpuViewBeginWindowDrag") orelse return null,
         .setCursor = sym(@FieldType(Native, "setCursor"), "uiSetCursor") orelse return null,
+        .setA11yHandlers = sym(*const fn (?*anyopaque, ?*anyopaque, ?A11yRequestCb, ?A11yActionCb) callconv(.c) void, "wgpuViewSetAccessibilityHandlers"),
+        .setA11yTree = sym(*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void, "wgpuViewSetAccessibilityTree"),
         .clipboardReadText = sym(*const fn () callconv(.c) ?[*:0]const u8, "clipboardReadText"),
         .clipboardWriteText = sym(*const fn ([*:0]const u8) callconv(.c) void, "clipboardWriteText"),
     };
@@ -71,6 +78,10 @@ const View = struct {
     start: f64 = 0,
     force: bool = true,
     in_frame: bool = false,
+    /// an assistive technology has queried the view
+    a11y_active: bool = false,
+    a11y_version: u64 = 0,
+    a11y_time: f64 = 0,
 };
 
 var views: std.ArrayList(*View) = .empty;
@@ -131,6 +142,7 @@ export fn ebui_attach_wgpu_view(ui_id: u32, view: ?*anyopaque, dawn_path: ?[*:0]
         inst.request_frame_ctx = hv;
     }
     n.setUIHandlers(v, hv, onPointer, onKey, onText, onFrame);
+    if (n.setA11yHandlers) |f| f(v, hv, onA11yRequest, onA11yAction);
     n.requestFrame(v);
     return true;
 }
@@ -290,7 +302,44 @@ fn onFrame(ctx: ?*anyopaque, t: f64) callconv(.c) void {
         hv.force = false;
         render(hv, ui) catch |e| std.log.err("ebui render: {}", .{e});
     }
+    if (hv.a11y_active and ui.doc.version != hv.a11y_version and now() - hv.a11y_time > 0.1) pushA11y(hv, ui);
     if (ui.wantsFrames()) n.requestFrame(hv.view);
+}
+
+fn pushA11y(hv: *View, ui: *ui_mod.Ui) void {
+    const n = native orelse return;
+    const f = n.setA11yTree orelse return;
+    hv.a11y_version = ui.doc.version;
+    hv.a11y_time = now();
+    _ = ui.update() catch {};
+    const tree = a11y.build(gpa, ui) catch return;
+    defer {
+        tree.deinit();
+        gpa.destroy(tree);
+    }
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(gpa);
+    a11y.serialize(tree, gpa, &buf) catch return;
+    f(hv.view, buf.items.ptr, buf.items.len);
+}
+
+fn onA11yRequest(ctx: ?*anyopaque) callconv(.c) void {
+    capi.lock();
+    defer capi.unlock();
+    const hv: *View = @ptrCast(@alignCast(ctx.?));
+    const ui = uiOf(hv) orelse return;
+    hv.a11y_active = true;
+    pushA11y(hv, ui);
+}
+
+fn onA11yAction(ctx: ?*anyopaque, node: u32, action: u32, value: [*:0]const u8) callconv(.c) void {
+    capi.lock();
+    defer capi.unlock();
+    const hv: *View = @ptrCast(@alignCast(ctx.?));
+    const ui = uiOf(hv) orelse return;
+    const act = std.enums.fromInt(a11y.Action, action) orelse return;
+    a11y.perform(ui, node, act, std.mem.span(value));
+    if (native) |n| n.requestFrame(hv.view);
 }
 
 fn render(hv: *View, ui: *ui_mod.Ui) !void {

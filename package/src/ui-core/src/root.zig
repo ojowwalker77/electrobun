@@ -17,6 +17,7 @@ pub const anim = @import("anim.zig");
 pub const reactive = @import("reactive.zig");
 pub const svg = @import("svg.zig");
 pub const images = @import("images.zig");
+pub const a11y = @import("a11y.zig");
 pub const template = @import("template.zig");
 pub const app = @import("app.zig");
 pub const capi = @import("capi.zig");

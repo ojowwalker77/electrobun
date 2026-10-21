@@ -3794,6 +3794,23 @@ typedef uint32_t (*UIViewKeyCallback)(void *ctx, uint32_t keyCode,
 typedef void (*UIViewTextCallback)(void *ctx, uint32_t kind, const char *text,
                                    uint32_t selLoc);
 typedef void (*UIViewFrameCallback)(void *ctx, double timestamp);
+// Accessibility: the UI core builds the tree on request and performs actions
+// (0 press, 1 focus, 2 increment, 3 decrement, 4 set value).
+typedef void (*UIViewA11yRequestCallback)(void *ctx);
+typedef void (*UIViewA11yActionCallback)(void *ctx, uint32_t nodeId,
+                                         uint32_t action, const char *value);
+
+@interface EBAXElement : NSAccessibilityElement
+@property(nonatomic, assign) uint32_t nodeId;
+@property(nonatomic, assign) uint32_t roleCode;
+@property(nonatomic, assign) uint16_t stateBits;
+@property(nonatomic, assign) NSRect localFrame;
+@property(nonatomic, weak) NSView *hostView;
+@property(nonatomic, assign) void *ctx;
+@property(nonatomic, assign) UIViewA11yActionCallback action;
+@property(nonatomic, strong) NSMutableArray *kids;
+@property(nonatomic, assign) BOOL fromTree;
+@end
 
 @interface WGPUInputView : NSView <NSTextInputClient>
 @property(nonatomic, assign) uint32_t wgpuViewId;
@@ -3806,7 +3823,57 @@ typedef void (*UIViewFrameCallback)(void *ctx, double timestamp);
 @property(nonatomic, assign) NSRect uiImeRect;
 @property(nonatomic, assign) BOOL uiComposing;
 @property(nonatomic, assign) BOOL uiFrameRequested;
+@property(nonatomic, assign) UIViewA11yRequestCallback uiA11yRequest;
+@property(nonatomic, assign) UIViewA11yActionCallback uiA11yAction;
+@property(nonatomic, strong) NSMutableArray *uiA11yRoots;
+@property(nonatomic, strong) NSMutableDictionary *uiA11yElements;
+@property(nonatomic, assign) BOOL uiA11yBuilt;
 - (void)uiRequestFrame;
+@end
+
+@implementation EBAXElement
+- (NSRect)accessibilityFrame {
+  NSView *v = self.hostView;
+  if (!v || !v.window)
+    return NSZeroRect;
+  NSRect r = self.localFrame;
+  if (!v.isFlipped)
+    r.origin.y = v.bounds.size.height - r.origin.y - r.size.height;
+  return NSAccessibilityFrameInView(v, r);
+}
+- (NSArray *)accessibilityChildren {
+  return self.kids;
+}
+- (BOOL)isAccessibilityFocused {
+  return (self.stateBits & 1) != 0;
+}
+- (void)setAccessibilityFocused:(BOOL)focused {
+  if (focused && self.action)
+    self.action(self.ctx, self.nodeId, 1, "");
+}
+- (BOOL)isAccessibilityEnabled {
+  return (self.stateBits & 2) == 0;
+}
+- (BOOL)accessibilityPerformPress {
+  if (self.action)
+    self.action(self.ctx, self.nodeId, 0, "");
+  return YES;
+}
+- (BOOL)accessibilityPerformIncrement {
+  if (self.action)
+    self.action(self.ctx, self.nodeId, 2, "");
+  return YES;
+}
+- (BOOL)accessibilityPerformDecrement {
+  if (self.action)
+    self.action(self.ctx, self.nodeId, 3, "");
+  return YES;
+}
+- (void)setAccessibilityValue:(id)value {
+  [super setAccessibilityValue:value];
+  if (!self.fromTree && self.action && [value isKindOfClass:[NSString class]])
+    self.action(self.ctx, self.nodeId, 4, [(NSString *)value UTF8String]);
+}
 @end
 
 @implementation WGPUInputView
@@ -3981,6 +4048,25 @@ typedef void (*UIViewFrameCallback)(void *ctx, double timestamp);
     dy *= 10.0;
   }
   [self emitPointer:3 event:event dx:dx dy:dy];
+}
+
+// ---- UI core: accessibility ----
+
+- (NSArray *)accessibilityChildren {
+  if (!self.uiA11yRequest)
+    return [super accessibilityChildren];
+  if (!self.uiA11yBuilt) {
+    // an assistive technology is asking: build the tree now
+    self.uiA11yBuilt = YES;
+    self.uiA11yRequest(self.uiCtx);
+  }
+  return self.uiA11yRoots ?: @[];
+}
+- (BOOL)isAccessibilityElement {
+  return self.uiA11yRequest ? NO : [super isAccessibilityElement];
+}
+- (NSAccessibilityRole)accessibilityRole {
+  return self.uiA11yRequest ? NSAccessibilityGroupRole : [super accessibilityRole];
 }
 
 // ---- UI core: frames ----
@@ -8856,6 +8942,160 @@ extern "C" void wgpuViewBeginWindowDrag(AbstractView *abstractView) {
   NSEvent *event = [NSApp currentEvent];
   if (view && view.window && event)
     [view.window performWindowDragWithEvent:event];
+}
+
+static NSAccessibilityRole ebaxRole(uint32_t code, NSAccessibilitySubrole *subrole) {
+  *subrole = nil;
+  switch (code) {
+  case 1: return NSAccessibilityButtonRole;
+  case 2: return NSAccessibilityLinkRole;
+  case 3: return NSAccessibilityCheckBoxRole;
+  case 4: return NSAccessibilityRadioButtonRole;
+  case 5: return NSAccessibilityTextFieldRole;
+  case 6: return NSAccessibilityTextAreaRole;
+  case 7: return NSAccessibilityStaticTextRole;
+  case 8: return NSAccessibilityStaticTextRole; // heading (subrole below)
+  case 9: return NSAccessibilityImageRole;
+  case 10: return NSAccessibilityListRole;
+  case 11: return NSAccessibilityGroupRole;
+  case 12: return NSAccessibilitySliderRole;
+  case 13: return NSAccessibilityProgressIndicatorRole;
+  case 14: return NSAccessibilityPopUpButtonRole;
+  case 15: return NSAccessibilityRadioButtonRole; // tab
+  case 16: return NSAccessibilityTabGroupRole;
+  case 17: *subrole = NSAccessibilityDialogSubrole; return NSAccessibilityGroupRole;
+  case 18: return NSAccessibilityMenuRole;
+  case 19: return NSAccessibilityMenuItemRole;
+  case 20: *subrole = NSAccessibilitySwitchSubrole; return NSAccessibilityCheckBoxRole;
+  case 21: return NSAccessibilityTableRole;
+  case 22: return NSAccessibilityRowRole;
+  case 23: return NSAccessibilityCellRole;
+  case 24: return NSAccessibilityToolbarRole;
+  case 28: return NSAccessibilitySplitterRole;
+  default: return NSAccessibilityGroupRole;
+  }
+}
+
+extern "C" void wgpuViewSetAccessibilityHandlers(AbstractView *abstractView, void *ctx,
+                                                 UIViewA11yRequestCallback request,
+                                                 UIViewA11yActionCallback action) {
+  runOnMainThreadSyncVoid(^{
+    WGPUInputView *view = uiInputViewOf(abstractView);
+    if (!view)
+      return;
+    view.uiCtx = ctx;
+    view.uiA11yRequest = request;
+    view.uiA11yAction = action;
+    view.uiA11yBuilt = NO;
+  });
+}
+
+// Replace the accessibility tree (format: ui-core a11y.serialize). Main thread.
+extern "C" void wgpuViewSetAccessibilityTree(AbstractView *abstractView, const uint8_t *buf,
+                                             size_t len) {
+  WGPUInputView *view = uiInputViewOf(abstractView);
+  if (!view || !buf || len < 4)
+    return;
+  if (!view.uiA11yElements)
+    view.uiA11yElements = [NSMutableDictionary dictionary];
+  size_t o = 0;
+  auto u32 = [&](void) -> uint32_t {
+    uint32_t v = 0;
+    if (o + 4 <= len) memcpy(&v, buf + o, 4);
+    o += 4;
+    return v;
+  };
+  auto f32 = [&](void) -> float {
+    float v = 0;
+    if (o + 4 <= len) memcpy(&v, buf + o, 4);
+    o += 4;
+    return v;
+  };
+  auto str = [&](void) -> NSString * {
+    uint32_t n = u32();
+    if (o + n > len)
+      return @"";
+    NSString *s = [[NSString alloc] initWithBytes:buf + o length:n encoding:NSUTF8StringEncoding];
+    o += n;
+    return s ?: @"";
+  };
+  uint32_t count = u32();
+  NSMutableArray *ordered = [NSMutableArray arrayWithCapacity:count];
+  NSMutableArray *roots = [NSMutableArray array];
+  NSMutableDictionary *seen = [NSMutableDictionary dictionary];
+  BOOL focusChanged = NO;
+  for (uint32_t i = 0; i < count && o < len; i++) {
+    uint32_t nodeId = u32();
+    uint32_t parent = u32();
+    uint8_t role = o < len ? buf[o] : 0;
+    uint8_t level = o + 1 < len ? buf[o + 1] : 0;
+    o += 2;
+    uint16_t state = 0;
+    if (o + 2 <= len) memcpy(&state, buf + o, 2);
+    o += 2;
+    float x = f32(), y = f32(), w = f32(), h = f32();
+    float mn = f32(), mx = f32(), now = f32();
+    NSString *name = str();
+    NSString *value = str();
+    NSString *desc = str();
+    EBAXElement *el = view.uiA11yElements[@(nodeId)];
+    if (!el) {
+      el = [[EBAXElement alloc] init];
+      el.nodeId = nodeId;
+      view.uiA11yElements[@(nodeId)] = el;
+    }
+    seen[@(nodeId)] = el;
+    BOOL wasFocused = (el.stateBits & 1) != 0;
+    el.hostView = view;
+    el.ctx = view.uiCtx;
+    el.action = view.uiA11yAction;
+    el.roleCode = role;
+    el.stateBits = state;
+    el.localFrame = NSMakeRect(x, y, w, h);
+    el.kids = [NSMutableArray array];
+    el.fromTree = YES;
+    NSAccessibilitySubrole sub = nil;
+    [el setAccessibilityRole:ebaxRole(role, &sub)];
+    if (sub) [el setAccessibilitySubrole:sub];
+    [el setAccessibilityLabel:name];
+    if (role == 8) [el setAccessibilityValue:name];
+    if (role == 3 || role == 4 || role == 20) {
+      [el setAccessibilityValue:@((state & 4) ? 1 : 0)];
+    } else if (role == 12 || role == 13) {
+      [el setAccessibilityMinValue:@(mn)];
+      [el setAccessibilityMaxValue:@(mx)];
+      [el setAccessibilityValue:@(now)];
+    } else if (value.length > 0 || role == 5 || role == 6) {
+      [el setAccessibilityValue:value];
+    }
+    if (desc.length) [el setAccessibilityHelp:desc];
+    el.fromTree = NO;
+    (void)level;
+    if ((state & 1) && !wasFocused) focusChanged = YES;
+    [ordered addObject:el];
+    if (parent < i && parent < ordered.count) {
+      EBAXElement *p = ordered[parent];
+      [p.kids addObject:el];
+      [el setAccessibilityParent:p];
+    } else {
+      [roots addObject:el];
+      [el setAccessibilityParent:view];
+    }
+  }
+  // drop elements whose nodes went away
+  for (NSNumber *key in [view.uiA11yElements allKeys]) {
+    if (!seen[key]) [view.uiA11yElements removeObjectForKey:key];
+  }
+  view.uiA11yRoots = roots;
+  NSAccessibilityPostNotification(view, NSAccessibilityLayoutChangedNotification);
+  if (focusChanged) {
+    for (EBAXElement *el in ordered) {
+      if (el.stateBits & 1) {
+        NSAccessibilityPostNotification(el, NSAccessibilityFocusedUIElementChangedNotification);
+        break;
+      }
+    }
+  }
 }
 
 // Set the mouse cursor by CSS cursor name.
