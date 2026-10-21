@@ -124,7 +124,7 @@ pub const Stylesheet = struct {
     }
 };
 
-pub fn parse(gpa: Allocator, interner: *Interner, src: []const u8) !*Stylesheet {
+pub fn parse(gpa: Allocator, interner: *Interner, src: []const u8) Allocator.Error!*Stylesheet {
     const sheet = try gpa.create(Stylesheet);
     sheet.* = .{ .arena_state = std.heap.ArenaAllocator.init(gpa) };
     errdefer {
@@ -771,7 +771,7 @@ fn resolveNesting(a: Allocator, parent: []const u8, nested: []const u8) ![]const
 }
 
 /// Parse an inline `style="..."` attribute.
-pub fn parseInline(arena: Allocator, src: []const u8, out: *std.ArrayList(Declaration)) !void {
+pub fn parseInline(arena: Allocator, src: []const u8, out: *std.ArrayList(Declaration)) Allocator.Error!void {
     var toks = try tok.tokenizeAll(arena, src);
     _ = &toks;
     const t = toks.items;
@@ -788,7 +788,7 @@ pub fn parseInline(arena: Allocator, src: []const u8, out: *std.ArrayList(Declar
             }
         }
         inlineDecl(arena, src, t, i, j, out) catch |e| switch (e) {
-            error.OutOfMemory => return e,
+            error.OutOfMemory => return error.OutOfMemory,
             else => {},
         };
         i = j + 1;

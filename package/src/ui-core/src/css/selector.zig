@@ -70,6 +70,11 @@ pub const Pseudo = union(enum) {
     where: []const Selector,
     has: []const Selector,
     dark, // matches when prefers-color-scheme is dark (non-standard helper; see @media)
+    /// pseudo-classes that never match in this engine (:host outside shadow
+    /// trees, :autofill, validity states, ...)
+    never,
+    /// pseudo-classes that always match (:defined)
+    always,
 };
 
 pub const Compound = struct {
@@ -114,7 +119,7 @@ fn parseForgiving(arena: Allocator, interner: *Interner, toks: []const Token) Pa
     var list: std.ArrayList(Selector) = .empty;
     for (parts[0..@min(n, parts.len)]) |p| {
         const sel = parseOne(arena, interner, p) catch |e| switch (e) {
-            error.OutOfMemory => return e,
+            error.OutOfMemory => return error.OutOfMemory,
             error.Invalid => continue,
         };
         try list.append(arena, sel);
@@ -390,6 +395,21 @@ fn simplePseudo(name: []const u8) ?Pseudo {
         .{ "visited", .visited },
         .{ "target", .target },
         .{ "open", .open },
+        .{ "host", .never },
+        .{ "autofill", .never },
+        .{ "-webkit-autofill", .never },
+        .{ "modal", .never },
+        .{ "popover-open", .never },
+        .{ "fullscreen", .never },
+        .{ "invalid", .never },
+        .{ "user-invalid", .never },
+        .{ "in-range", .always },
+        .{ "out-of-range", .never },
+        .{ "valid", .always },
+        .{ "user-valid", .always },
+        .{ "defined", .always },
+        .{ "playing", .never },
+        .{ "paused", .never },
     });
     var buf: [32]u8 = undefined;
     if (name.len > buf.len) return null;
@@ -401,6 +421,7 @@ fn functionalPseudo(arena: Allocator, interner: *Interner, name: []const u8, bod
     if (eq(name, "is") or eq(name, "matches") or eq(name, "-webkit-any")) return .{ .is = try parseForgiving(arena, interner, body) };
     if (eq(name, "where")) return .{ .where = try parseForgiving(arena, interner, body) };
     if (eq(name, "has")) return .{ .has = try parseList(arena, interner, body) };
+    if (eq(name, "host") or eq(name, "host-context") or eq(name, "state") or eq(name, "lang") or eq(name, "dir")) return .never;
     if (eq(name, "nth-child")) return .{ .nth_child = try parseNth(body) };
     if (eq(name, "nth-last-child")) return .{ .nth_last_child = try parseNth(body) };
     if (eq(name, "nth-of-type")) return .{ .nth_of_type = try parseNth(body) };
