@@ -339,6 +339,15 @@ export fn ebui_add_stylesheet(id: u32, css: ?[*]const u8, len: usize) usize {
     return @intFromPtr(sheet);
 }
 
+/// Add the built-in component stylesheet (eb-* classes).
+export fn ebui_use_components(id: u32) usize {
+    lock();
+    defer unlock();
+    const inst = get(id) orelse return 0;
+    const sheet = inst.ui.doc.addStylesheet(ui_mod.Ui.components_css) catch return 0;
+    return @intFromPtr(sheet);
+}
+
 export fn ebui_remove_stylesheet(id: u32, handle: usize) void {
     lock();
     defer unlock();

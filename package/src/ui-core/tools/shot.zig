@@ -22,6 +22,7 @@ pub fn main(init: std.process.Init) !void {
     defer ui.destroy();
     ui.images.io = io;
     try ui.images.setBaseDir(std.fs.path.dirname(input) orelse ".");
+    if (std.mem.indexOf(u8, src, "eb-") != null) try ui.useComponents();
     try ui.setHtml(src);
     ui.resize(w, h, scale);
     const t0 = std.Io.Timestamp.now(io, .awake);

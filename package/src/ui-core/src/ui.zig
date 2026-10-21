@@ -168,6 +168,13 @@ pub const Ui = struct {
         try html.parseInto(ui.doc, ui.doc.root, src, .{});
     }
 
+    /// The built-in component stylesheet (eb-* classes; see src/components).
+    pub const components_css = @embedFile("components/electrobun.css");
+
+    pub fn useComponents(ui: *Ui) !void {
+        _ = try ui.doc.addStylesheet(components_css);
+    }
+
     pub fn addCss(ui: *Ui, css: []const u8) !void {
         _ = try ui.doc.addStylesheet(css);
     }
@@ -393,3 +400,4 @@ test "select popup" {
     ui.ix.pointerUp(o[0] + 2, o[1] + 2, 0, .{});
     try std.testing.expectEqualStrings("a", ui.ix.value(sel));
 }
+

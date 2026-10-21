@@ -258,7 +258,7 @@ const Ctx = struct {
                 const lp = inv.apply(.{ .x = dx, .y = dy });
                 const d_out = sdf.roundedRect(lp.x, lp.y, r, radii) / s;
                 const d_in = sdf.roundedRect(lp.x, lp.y, inner, inner_r) / s;
-                var cov = std.math.clamp(0.5 - d_out, 0, 1) * std.math.clamp(0.5 + d_in, 0, 1);
+                var cov = @max(0, std.math.clamp(0.5 - d_out, 0, 1) - std.math.clamp(0.5 - d_in, 0, 1));
                 if (cov <= 0) continue;
                 const styled = sides[0].style == .dashed or sides[0].style == .dotted or sides[1].style == .dashed or sides[1].style == .dotted or sides[2].style == .dashed or sides[2].style == .dotted or sides[3].style == .dashed or sides[3].style == .dotted;
                 const side = if (uniform and !styled) 0 else sdf.borderSide(lp.x, lp.y, r, widths);

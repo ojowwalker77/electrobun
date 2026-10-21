@@ -134,7 +134,7 @@ fn fs_main(in: VOut) -> @location(0) vec4f {
       let ir = max(vec4f(0.0), p.radii - vec4f(max(w.w, w.x), max(w.y, w.x), max(w.y, w.z), max(w.w, w.z)));
       let d_out = sdRoundRect(lp, p.rect, p.radii) * s;
       let d_in = sdRoundRect(lp, inner, ir) * s;
-      var c = clamp(0.5 - d_out, 0.0, 1.0) * clamp(0.5 + d_in, 0.0, 1.0);
+      var c = max(0.0, clamp(0.5 - d_out, 0.0, 1.0) - clamp(0.5 - d_in, 0.0, 1.0));
       let side = borderSide(lp, p.rect, w);
       var sc = p.color;
       var sw = w.x;
