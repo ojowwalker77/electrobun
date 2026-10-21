@@ -79,3 +79,15 @@ input[type=hidden] { display: none; }
 button:disabled { background-color: #f0f0f0; border-color: #c4c4c4; }
 :focus-visible { outline: 2px solid #005fcc; outline-offset: 1px; }
 input:focus-visible, textarea:focus-visible, select:focus-visible { outline-offset: 0; }
+
+/* <select> popup rendered by the core */
+ebui-listbox { display: block; position: fixed; z-index: 2147483647; box-sizing: border-box; max-height: 320px; overflow: auto;
+  background-color: #fff; color: #1d1d1f; border: 1px solid rgba(0,0,0,.14); border-radius: 8px; padding: 4px;
+  box-shadow: 0 10px 30px rgba(0,0,0,.18), 0 2px 6px rgba(0,0,0,.08); font: 13px system-ui; }
+ebui-option { display: block; padding: 5px 10px 5px 24px; border-radius: 5px; white-space: nowrap; cursor: default; position: relative; }
+ebui-option[aria-selected]::before { content: "\2713"; position: absolute; left: 8px; }
+ebui-option.highlighted { background-color: #0a64d8; color: #fff; }
+ebui-option[aria-disabled] { color: #a0a0a0; }
+@media (prefers-color-scheme: dark) {
+  ebui-listbox { background-color: #2a2b30; color: #ececf0; border-color: rgba(255,255,255,.12); }
+}

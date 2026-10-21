@@ -364,3 +364,32 @@ test "springs" {
     _ = try ui.update();
     try std.testing.expectApproxEqAbs(@as(f32, 0), style_mod.of(ui.doc, b).opacity, 0.001);
 }
+
+test "select popup" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 }</style><select id="s"><option value="a">Alpha</option><option value="b" selected>Beta</option><option value="c">Gamma</option></select>
+    );
+    defer ui.destroy();
+    const sel = try style_mod.querySelector(ui.doc, ui.doc.root, "#s");
+    var counter = Counter{};
+    _ = try ui.ix.addListener(sel, .change, Counter.cb, &counter);
+    try std.testing.expectEqualStrings("b", ui.ix.value(sel));
+    ui.ix.click(sel, 0, 0, .{}, 1);
+    try std.testing.expect(ui.ix.popup != 0);
+    _ = try ui.update();
+    ui.ix.keyDown("ArrowDown", .{});
+    ui.ix.keyDown("Enter", .{});
+    try std.testing.expectEqual(@as(dom.NodeId, 0), ui.ix.popup);
+    try std.testing.expectEqualStrings("c", ui.ix.value(sel));
+    try std.testing.expectEqual(@as(u32, 1), counter.n);
+    // clicking an option in the popup
+    ui.ix.click(sel, 0, 0, .{}, 1);
+    _ = try ui.update();
+    const first = ui.doc.node(ui.ix.popup).first_child;
+    const b = layout.boxOfNode(ui.doc.node(first)).?;
+    const o = ui.ix.contentOrigin(first).?;
+    _ = b;
+    ui.ix.pointerDown(o[0] + 2, o[1] + 2, 0, .{});
+    ui.ix.pointerUp(o[0] + 2, o[1] + 2, 0, .{});
+    try std.testing.expectEqualStrings("a", ui.ix.value(sel));
+}

@@ -1310,7 +1310,7 @@ const Computer = struct {
             .flex_grow => s.flex_grow = @max(0, v.number),
             .flex_shrink => s.flex_shrink = @max(0, v.number),
             .flex_basis => s.flex_basis = c.size(v),
-            .order => s.order = if (v == .number) @intFromFloat(v.number) else 0,
+            .order => s.order = if (v == .number) toI32(v.number) else 0,
             .justify_content => s.justify_content = @enumFromInt(v.enum_val),
             .justify_items => s.justify_items = @enumFromInt(v.enum_val),
             .justify_self => s.justify_self = @enumFromInt(v.enum_val),
@@ -1328,7 +1328,7 @@ const Computer = struct {
             .grid_row => s.grid_row = v.grid_line,
             .overflow_x => s.overflow_x = @enumFromInt(v.enum_val),
             .overflow_y => s.overflow_y = @enumFromInt(v.enum_val),
-            .z_index => s.z_index = if (v == .number) @intFromFloat(v.number) else null,
+            .z_index => s.z_index = if (v == .number) toI32(v.number) else null,
             .vertical_align => s.vertical_align = @enumFromInt(v.enum_val),
             .color => {
                 // currentColor on `color` means the inherited color
@@ -1406,7 +1406,7 @@ const Computer = struct {
             .white_space => s.white_space = @enumFromInt(v.enum_val),
             .word_break => s.word_break = @enumFromInt(v.enum_val),
             .overflow_wrap => s.overflow_wrap = @enumFromInt(v.enum_val),
-            .line_clamp => s.line_clamp = if (v == .number and v.number >= 1) @intFromFloat(v.number) else null,
+            .line_clamp => s.line_clamp = if (v == .number and v.number >= 1) @intFromFloat(@min(v.number, 100000)) else null,
             .tab_size => s.tab_size = if (v == .number) v.number else 8,
             .caret_color => s.caret_color = if (v == .color) c.color(v.color) else null,
             .accent_color => s.accent_color = if (v == .color) c.color(v.color) else null,
@@ -1594,6 +1594,11 @@ const Computer = struct {
         return std.ascii.isAlphanumeric(ch) or ch == '-' or ch == '_';
     }
 };
+
+fn toI32(v: f32) i32 {
+    if (std.math.isNan(v)) return 0;
+    return @intFromFloat(std.math.clamp(@round(v), -2147483520.0, 2147483520.0));
+}
 
 fn snapBorder(v: f32) f32 {
     // browsers floor border widths to device pixels, with a 1px minimum for >0

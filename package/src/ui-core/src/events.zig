@@ -191,6 +191,10 @@ pub const Interaction = struct {
     drag_select: NodeId = null_id,
     keyboard_focus: bool = false,
     next_serial: u32 = 0,
+    /// open <select> popup: the select, its listbox overlay and highlighted index
+    popup_select: NodeId = null_id,
+    popup: NodeId = null_id,
+    popup_index: usize = 0,
     now: f64 = 0,
     /// time of the last caret movement (blink restarts)
     caret_time: f64 = 0,
@@ -330,6 +334,9 @@ pub const Interaction = struct {
         ix.pointer_y = y;
         const target = ix.hitTest(x, y);
         ix.updateHover(target);
+        if (ix.popup != null_id and ix.doc.isInclusiveAncestor(ix.popup, target)) {
+            if (ix.optionIndexOf(target)) |idx| ix.highlightPopup(idx);
+        }
         // text selection drag
         if (ix.drag_select != null_id and ix.buttons & 1 != 0) {
             if (ix.edits.get(ix.drag_select)) |e| {
@@ -411,6 +418,20 @@ pub const Interaction = struct {
         ix.pointer_y = y;
         ix.buttons |= @as(u8, 1) << @intCast(@min(button, 7));
         const target = ix.hitTest(x, y);
+        if (ix.popup != null_id) {
+            if (ix.doc.isInclusiveAncestor(ix.popup, target)) {
+                if (ix.optionIndexOf(target)) |idx| ix.choosePopup(idx);
+                ix.buttons = 0;
+                return;
+            }
+            // outside click dismisses (and is consumed when on the select)
+            const on_select = ix.doc.isInclusiveAncestor(ix.popup_select, target);
+            ix.closePopup();
+            if (on_select) {
+                ix.buttons = 0;
+                return;
+            }
+        }
         ix.updateHover(target);
         ix.down_target = target;
         var ev = Event{ .type = .pointerdown, .target = target, .x = x, .y = y, .button = button, .buttons = ix.buttons, .mods = mods };
@@ -530,6 +551,11 @@ pub const Interaction = struct {
                 if (n.hasAttr(w.disabled)) return;
                 const t = n.getAttr(w.type) orelse "submit";
                 if (std.ascii.eqlIgnoreCase(t, "submit")) ix.submitForm(cur);
+                return;
+            }
+            if (n.tag == w.select) {
+                if (n.hasAttr(w.disabled)) return;
+                ix.openPopup(cur);
                 return;
             }
             if (n.tag == w.summary) {
@@ -856,8 +882,27 @@ pub const Interaction = struct {
     pub fn keyDown(ix: *Interaction, key: []const u8, mods: Modifiers) void {
         const doc = ix.doc;
         const target = if (doc.focused != null_id and doc.get(doc.focused) != null) doc.focused else ix.bodyOrRoot();
+        if (ix.popup != null_id) {
+            const n_opts = ix.doc.node(ix.popup).child_count;
+            if (std.mem.eql(u8, key, "ArrowDown")) {
+                ix.highlightPopup(@min(ix.popup_index + 1, n_opts -| 1));
+            } else if (std.mem.eql(u8, key, "ArrowUp")) {
+                ix.highlightPopup(ix.popup_index -| 1);
+            } else if (std.mem.eql(u8, key, "Enter") or std.mem.eql(u8, key, " ")) {
+                ix.choosePopup(ix.popup_index);
+            } else if (std.mem.eql(u8, key, "Escape") or std.mem.eql(u8, key, "Tab")) {
+                ix.closePopup();
+            }
+            return;
+        }
         var ev = Event{ .type = .keydown, .target = target, .key = key, .mods = mods };
         if (!ix.dispatch(&ev)) return;
+        if (doc.focused != null_id and doc.node(doc.focused).tag == doc.atoms.select) {
+            if (std.mem.eql(u8, key, " ") or std.mem.eql(u8, key, "Enter") or std.mem.eql(u8, key, "ArrowDown") or std.mem.eql(u8, key, "ArrowUp")) {
+                ix.openPopup(doc.focused);
+                return;
+            }
+        }
         if (std.mem.eql(u8, key, "Tab") and !mods.primary()) {
             if (!(doc.focused != null_id and doc.node(doc.focused).tag == doc.atoms.textarea and false)) {
                 ix.focusNext(mods.shift);
@@ -969,7 +1014,141 @@ pub const Interaction = struct {
     /// Current value of a text control.
     pub fn value(ix: *Interaction, id: NodeId) []const u8 {
         if (ix.edits.get(id)) |e| return e.text.items;
+        const doc = ix.doc;
+        if (doc.node(id).tag == doc.atoms.select) {
+            const opt = ix.selectedOption(id) orelse return "";
+            if (doc.node(opt).getAttr(doc.atoms.value)) |v| return v;
+        }
         return ix.L.controlText(id);
+    }
+
+    // -----------------------------------------------------------------------
+    // <select> popup
+    // -----------------------------------------------------------------------
+
+    fn options(ix: *Interaction, sel: NodeId, out: *std.ArrayList(NodeId)) void {
+        const doc = ix.doc;
+        var cur = doc.nextInTree(sel, sel);
+        while (cur != null_id) : (cur = doc.nextInTree(cur, sel)) {
+            const n = doc.node(cur);
+            if (n.kind == .element and n.tag == doc.atoms.option) out.append(ix.gpa, cur) catch return;
+        }
+    }
+
+    fn selectedOption(ix: *Interaction, sel: NodeId) ?NodeId {
+        var list: std.ArrayList(NodeId) = .empty;
+        defer list.deinit(ix.gpa);
+        ix.options(sel, &list);
+        for (list.items) |o| if (ix.doc.node(o).hasAttr(ix.doc.atoms.selected)) return o;
+        return if (list.items.len > 0) list.items[0] else null;
+    }
+
+    pub fn openPopup(ix: *Interaction, sel: NodeId) void {
+        if (ix.popup != null_id) ix.closePopup();
+        const doc = ix.doc;
+        var list: std.ArrayList(NodeId) = .empty;
+        defer list.deinit(ix.gpa);
+        ix.options(sel, &list);
+        if (list.items.len == 0) return;
+        const origin = ix.contentOrigin(sel) orelse return;
+        const b = layout.boxOfNode(doc.node(sel)) orelse return;
+        const bx = origin[0] - b.border.left - b.padding.left;
+        const by = origin[1] - b.border.top - b.padding.top;
+        const pop = doc.createElement("ebui-listbox") catch return;
+        var style_buf: [160]u8 = undefined;
+        const below = by + b.h + 4;
+        const style = std.fmt.bufPrint(&style_buf, "left: {d}px; top: {d}px; min-width: {d}px", .{ bx, below, b.w }) catch "";
+        doc.setAttribute(pop, "style", style) catch {};
+        doc.setAttribute(pop, "role", "listbox") catch {};
+        var sel_index: usize = 0;
+        const current = ix.selectedOption(sel);
+        for (list.items, 0..) |o, i| {
+            const item = doc.createElement("ebui-option") catch return;
+            var text: std.ArrayList(u8) = .empty;
+            defer text.deinit(ix.gpa);
+            doc.textContent(o, &text) catch {};
+            const t = doc.createText(std.mem.trim(u8, text.items, " \t\r\n")) catch return;
+            doc.appendChild(item, t);
+            if (doc.node(o).hasAttr(doc.atoms.disabled)) doc.setAttribute(item, "aria-disabled", "true") catch {};
+            if (current != null and current.? == o) {
+                sel_index = i;
+                doc.setAttribute(item, "aria-selected", "true") catch {};
+            }
+            doc.appendChild(pop, item);
+        }
+        doc.appendChild(ix.bodyOrRoot(), pop);
+        ix.popup = pop;
+        ix.popup_select = sel;
+        var s = doc.node(sel).state;
+        s.open = true;
+        doc.setState(sel, s);
+        ix.highlightPopup(sel_index);
+        ix.requestFrame();
+    }
+
+    fn optionIndexOf(ix: *Interaction, target: NodeId) ?usize {
+        const doc = ix.doc;
+        var cur = target;
+        while (cur != null_id and doc.node(cur).parent != ix.popup) : (cur = doc.node(cur).parent) {}
+        if (cur == null_id) return null;
+        var i: usize = 0;
+        var c = doc.node(ix.popup).first_child;
+        while (c != null_id) : (c = doc.node(c).next) {
+            if (c == cur) return i;
+            i += 1;
+        }
+        return null;
+    }
+
+    fn highlightPopup(ix: *Interaction, index: usize) void {
+        const doc = ix.doc;
+        var i: usize = 0;
+        var c = doc.node(ix.popup).first_child;
+        while (c != null_id) : (c = doc.node(c).next) {
+            if (i == index) {
+                doc.setAttribute(c, "class", "highlighted") catch {};
+                ix.scrollIntoView(c);
+            } else doc.removeAttribute(c, "class") catch {};
+            i += 1;
+        }
+        ix.popup_index = index;
+        ix.requestFrame();
+    }
+
+    fn choosePopup(ix: *Interaction, index: usize) void {
+        const doc = ix.doc;
+        const sel = ix.popup_select;
+        var list: std.ArrayList(NodeId) = .empty;
+        defer list.deinit(ix.gpa);
+        ix.options(sel, &list);
+        ix.closePopup();
+        if (index >= list.items.len) return;
+        const chosen = list.items[index];
+        if (doc.node(chosen).hasAttr(doc.atoms.disabled)) return;
+        const before = ix.selectedOption(sel);
+        for (list.items) |o| {
+            if (o == chosen) doc.setAttribute(o, "selected", "") catch {} else doc.removeAttribute(o, "selected") catch {};
+        }
+        doc.markLayoutDirty(sel);
+        doc.node(sel).flags.text_dirty = true;
+        if (before == null or before.? != chosen) {
+            _ = ix.fire(.input, sel);
+            _ = ix.fire(.change, sel);
+        }
+    }
+
+    pub fn closePopup(ix: *Interaction) void {
+        if (ix.popup == null_id) return;
+        const doc = ix.doc;
+        if (doc.get(ix.popup) != null) doc.destroy(ix.popup);
+        if (doc.get(ix.popup_select) != null) {
+            var s = doc.node(ix.popup_select).state;
+            s.open = false;
+            doc.setState(ix.popup_select, s);
+        }
+        ix.popup = null_id;
+        ix.popup_select = null_id;
+        ix.requestFrame();
     }
 
     pub fn setValue(ix: *Interaction, id: NodeId, v: []const u8) !void {
