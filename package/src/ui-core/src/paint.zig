@@ -103,10 +103,17 @@ pub const DisplayList = struct {
 
     /// Topmost node under a window-space point.
     pub fn hitTest(dl: *const DisplayList, x: f32, y: f32) NodeId {
+        return dl.hitTestLive(x, y, null);
+    }
+
+    /// Hit test, skipping regions whose node was destroyed since the last
+    /// paint (e.g. a closed popup) when `doc` is given.
+    pub fn hitTestLive(dl: *const DisplayList, x: f32, y: f32, doc: ?*const dom.Document) NodeId {
         var i = dl.hits.items.len;
         while (i > 0) {
             i -= 1;
             const h = dl.hits.items[i];
+            if (doc) |d| if (d.get(h.node) == null) continue;
             const p = h.inv.apply(.{ .x = x, .y = y });
             if (!h.clip.contains(p)) continue;
             if (!h.rect.contains(p)) continue;
@@ -132,8 +139,8 @@ pub const Hooks = struct {
 pub const ImageRef = struct { id: u32, w: f32, h: f32 };
 
 pub const TextState = struct {
-    caret: u32,
-    anchor: u32,
+    caret: inline_mod.TextOffset,
+    anchor: inline_mod.TextOffset,
     scroll_x: f32 = 0,
     scroll_y: f32 = 0,
 };
@@ -609,8 +616,8 @@ pub const Painter = struct {
             const oy = content.y - scroll_y;
             // selection highlight
             if (ts) |s| if (s.caret != s.anchor) {
-                const lo = @min(s.caret, s.anchor);
-                const hi = @max(s.caret, s.anchor);
+                const lo = @min(s.caret.int(), s.anchor.int());
+                const hi = @max(s.caret.int(), s.anchor.int());
                 try p.paintSelection(il, it.node, lo, hi, ox, oy, Color.rgba(0, 117, 255, 70));
             };
             var dummy: std.ArrayList(Deferred) = .empty;

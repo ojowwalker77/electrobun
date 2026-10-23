@@ -9,8 +9,18 @@ const props = @import("css/properties.zig");
 const stylesheet = @import("css/stylesheet.zig");
 
 pub const Atom = atom_mod.Atom;
+/// Generational node handle: low `slot_bits` index a slot, the high bits
+/// hold that slot's generation. Destroying a node bumps the generation, so a
+/// stale id never resolves (and never aliases a newer node in the slot).
 pub const NodeId = u32;
 pub const null_id: NodeId = 0;
+const slot_bits = 20;
+const slot_mask: u32 = (1 << slot_bits) - 1;
+const max_gen: u32 = (1 << (32 - slot_bits)) - 1;
+
+inline fn slotOf(id: NodeId) u32 {
+    return id & slot_mask;
+}
 const Allocator = std.mem.Allocator;
 
 pub const Kind = enum(u8) { document, element, text, comment };
@@ -121,7 +131,10 @@ pub const Document = struct {
     gpa: Allocator,
     interner: atom_mod.Interner,
     nodes: std.ArrayList(?*Node) = .empty,
-    free_ids: std.ArrayList(NodeId) = .empty,
+    /// current generation of each slot
+    gens: std.ArrayList(u16) = .empty,
+    /// reusable slots (their generation was already bumped)
+    free_ids: std.ArrayList(u32) = .empty,
     root: NodeId = null_id,
 
     /// author stylesheets in cascade order
@@ -155,6 +168,7 @@ pub const Document = struct {
         doc.* = .{ .gpa = gpa, .interner = atom_mod.Interner.init(gpa) };
         doc.atoms = try WellKnown.init(&doc.interner);
         try doc.nodes.append(gpa, null); // id 0 is null
+        try doc.gens.append(gpa, 0);
         doc.root = try doc.allocNode(.document, atom_mod.none);
         return doc;
     }
@@ -165,6 +179,7 @@ pub const Document = struct {
             if (maybe) |n| doc.freeNodeMemory(n);
         }
         doc.nodes.deinit(gpa);
+        doc.gens.deinit(gpa);
         doc.free_ids.deinit(gpa);
         for (doc.sheets.items) |s| {
             s.deinit();
@@ -193,25 +208,38 @@ pub const Document = struct {
     fn allocNode(doc: *Document, kind: Kind, tag: Atom) !NodeId {
         const n = try doc.gpa.create(Node);
         errdefer doc.gpa.destroy(n);
-        var id: NodeId = undefined;
+        var slot: u32 = undefined;
         if (doc.free_ids.pop()) |reuse| {
-            id = reuse;
-            doc.nodes.items[id] = n;
+            slot = reuse;
+            doc.nodes.items[slot] = n;
         } else {
-            id = @intCast(doc.nodes.items.len);
+            slot = @intCast(doc.nodes.items.len);
+            if (slot > slot_mask) return error.OutOfMemory;
+            try doc.gens.append(doc.gpa, 0);
+            errdefer _ = doc.gens.pop();
             try doc.nodes.append(doc.gpa, n);
         }
+        const id: NodeId = slot | (@as(u32, doc.gens.items[slot]) << slot_bits);
         n.* = .{ .kind = kind, .tag = tag, .id = id };
         return id;
     }
 
+    /// The node for `id`, or null if it was destroyed (or never existed).
     pub fn get(doc: *const Document, id: NodeId) ?*Node {
-        if (id == null_id or id >= doc.nodes.items.len) return null;
-        return doc.nodes.items[id];
+        const slot = slotOf(id);
+        if (id == null_id or slot >= doc.nodes.items.len) return null;
+        if (doc.gens.items[slot] != id >> slot_bits) return null;
+        return doc.nodes.items[slot];
     }
 
+    /// The node for a live `id`. A stale id is a bug: it panics in safe
+    /// builds. Code holding ids across mutations or frames must use `get`.
     pub fn node(doc: *const Document, id: NodeId) *Node {
-        return doc.nodes.items[id].?;
+        return doc.get(id) orelse std.debug.panic("stale or invalid NodeId {d}", .{id});
+    }
+
+    pub fn isAlive(doc: *const Document, id: NodeId) bool {
+        return doc.get(id) != null;
     }
 
     pub fn createElement(doc: *Document, tag_name: []const u8) !NodeId {
@@ -248,8 +276,13 @@ pub const Document = struct {
         if (doc.hovered == id) doc.hovered = null_id;
         if (doc.active == id) doc.active = null_id;
         doc.freeNodeMemory(n);
-        doc.nodes.items[id] = null;
-        doc.free_ids.append(doc.gpa, id) catch {};
+        const slot = slotOf(id);
+        doc.nodes.items[slot] = null;
+        // retire the slot when its generation would wrap: ids never alias
+        if (doc.gens.items[slot] < max_gen) {
+            doc.gens.items[slot] += 1;
+            doc.free_ids.append(doc.gpa, slot) catch {};
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -765,9 +798,12 @@ test "tree mutation" {
     out.clearRetainingCapacity();
     try doc.serialize(doc.root, &out);
     try std.testing.expectEqualStrings("<div class=\"card  big\" id=\"main\">hello!</div>", out.items);
-    // ids are recycled
+    // slots are recycled, but a stale id never resolves to the new node
     const d = try doc.createElement("i");
-    try std.testing.expectEqual(b, d);
+    try std.testing.expect(d != b);
+    try std.testing.expectEqual(b & slot_mask, d & slot_mask);
+    try std.testing.expect(doc.get(b) == null);
+    try std.testing.expect(doc.get(d) != null);
     doc.destroy(d);
     try doc.setStyleProperty(div, "color", "red");
     try doc.setStyleProperty(div, "width", "10px");

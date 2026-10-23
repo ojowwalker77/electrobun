@@ -2622,7 +2622,9 @@ async function buildUI() {
 	console.log(`Building ElectrobunUI for ${OS} ${ARCH}...`);
 	const sdk = runCaptured("xcrun", ["--sdk", "macosx", "--show-sdk-path"]).trim();
 	const zigArgs = [`-Dtarget=${macosZigTarget(ARCH)}`, `-Dmacos-sdk=${sdk}`, `-Dtools=false`];
-	const optimize = CHANNEL === "release" ? "ReleaseSmall" : "ReleaseFast";
+	// dev builds keep safety checks: bounds, null and stale-id misuse panic
+	// with a stack trace at the faulty line instead of corrupting memory
+	const optimize = CHANNEL === "release" ? "ReleaseSmall" : "ReleaseSafe";
 	await $`cd src/ui-core && ../../vendors/zig/zig build -Doptimize=${optimize} ${zigArgs}`;
 }
 

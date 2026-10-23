@@ -582,7 +582,10 @@ export class NativeDocument {
 		const lib = uiLib();
 		const out = new Float32Array(4);
 		lib.ebui_get_rect(this.ui, lib.ebui_resolve(this.ui, el.id), ptr(out));
-		const [x, y, width, height] = out;
+		const x = out[0]!;
+		const y = out[1]!;
+		const width = out[2]!;
+		const height = out[3]!;
 		return { x, y, width, height, left: x, top: y, right: x + width, bottom: y + height };
 	}
 	scrollIntoView(el: NativeElement): void {

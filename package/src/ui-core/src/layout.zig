@@ -1027,15 +1027,16 @@ pub const Layout = struct {
             return "";
         }
         const v = n.getAttr(doc.atoms.value) orelse return "";
-        if (n.getAttr(doc.atoms.type)) |t| if (std.ascii.eqlIgnoreCase(t, "password")) return passwordMask(L, v.len);
+        if (n.getAttr(doc.atoms.type)) |t| if (std.ascii.eqlIgnoreCase(t, "password")) return L.passwordMask(v);
         return v;
     }
 
-    fn passwordMask(L: *Layout, len: usize) []const u8 {
-        const bullet = "\u{2022}";
-        const a = L.scratch.allocator();
-        const buf = a.alloc(u8, len * bullet.len) catch return "";
-        for (0..len) |i| @memcpy(buf[i * bullet.len ..][0..bullet.len], bullet);
+    /// The bullets shown for a password value: one per codepoint.
+    pub fn passwordMask(L: *Layout, value: []const u8) []const u8 {
+        const bullet = inline_mod.password_bullet;
+        const n = std.unicode.utf8CountCodepoints(value) catch value.len;
+        const buf = L.scratch.allocator().alloc(u8, n * bullet.len) catch return "";
+        for (0..n) |i| @memcpy(buf[i * bullet.len ..][0..bullet.len], bullet);
         return buf;
     }
 
@@ -1647,6 +1648,13 @@ pub fn isReplaced(doc: *const Document, id: NodeId) bool {
     return t == w.img or t == w.input or t == w.textarea or t == w.select or t == w.canvas or t == w.progress or t == w.webview or t == w.wgpu or t == w.svg or
         (doc.interner.lookup("video") != null and t == doc.interner.lookup("video").?) or
         (doc.interner.lookup("iframe") != null and t == doc.interner.lookup("iframe").?);
+}
+
+pub fn isPassword(doc: *const Document, id: NodeId) bool {
+    const n = doc.node(id);
+    if (n.tag != doc.atoms.input) return false;
+    const t = n.getAttr(doc.atoms.type) orelse return false;
+    return std.ascii.eqlIgnoreCase(t, "password");
 }
 
 pub fn isTextInput(doc: *const Document, id: NodeId) bool {

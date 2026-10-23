@@ -64,6 +64,23 @@ pub const Line = struct {
     frag_end: u32,
 };
 
+/// Byte offset into the text as laid out. For form controls this is not the
+/// value: a password shows bullets and an empty control shows its placeholder.
+/// A distinct type so value offsets can't be passed where layout ones are
+/// expected; convert with events.Interaction.layoutOffset / valueOffset.
+/// Shown in place of each character of a password control's value.
+pub const password_bullet = "\u{2022}";
+
+pub const TextOffset = enum(u32) {
+    _,
+    pub fn of(v: u32) TextOffset {
+        return @enumFromInt(v);
+    }
+    pub fn int(t: TextOffset) u32 {
+        return @intFromEnum(t);
+    }
+};
+
 pub const InlineLayout = struct {
     arena: std.heap.ArenaAllocator,
     lines: []Line = &.{},
@@ -81,10 +98,11 @@ pub const InlineLayout = struct {
         gpa.destroy(il);
     }
 
-    /// Caret rectangle (IFC coordinates) for a byte offset in `node`'s text.
+    /// Caret rectangle (IFC coordinates) for an offset in `node`'s laid-out text.
     pub const Caret = struct { x: f32, y: f32, h: f32 };
 
-    pub fn caretAt(il: *const InlineLayout, node: NodeId, offset: u32) ?Caret {
+    pub fn caretAt(il: *const InlineLayout, node: NodeId, at: TextOffset) ?Caret {
+        const offset = at.int();
         var best: ?Caret = null;
         for (il.frags) |f| {
             if (f.kind != .text or f.item.node != node or f.ellipsis) continue;
@@ -106,8 +124,12 @@ pub const InlineLayout = struct {
         return best;
     }
 
-    /// Byte offset in `node`'s text nearest to an IFC-relative point.
-    pub fn offsetAt(il: *const InlineLayout, node: NodeId, px: f32, py: f32) ?u32 {
+    /// Offset in `node`'s laid-out text nearest to an IFC-relative point.
+    pub fn offsetAt(il: *const InlineLayout, node: NodeId, px: f32, py: f32) ?TextOffset {
+        return if (il.offsetAtRaw(node, px, py)) |o| TextOffset.of(o) else null;
+    }
+
+    fn offsetAtRaw(il: *const InlineLayout, node: NodeId, px: f32, py: f32) ?u32 {
         if (il.lines.len == 0) return null;
         var li: usize = 0;
         for (il.lines, 0..) |l, i| {
@@ -234,7 +256,10 @@ pub const Builder = struct {
             }
             if (c == '\n' and !(ws == .normal or ws == .nowrap)) {
                 // preserved newline: forced break item
-                if (out.items.len > 0) try b.pushTextItem(item, st, out.items, map.items);
+                if (out.items.len > 0) {
+                    try map.append(b.arena, @intCast(i)); // end sentinel: the newline
+                    try b.pushTextItem(item, st, out.items, map.items);
+                }
                 out = .empty;
                 map = .empty;
                 try b.items.append(b.arena, .{ .kind = .br, .item = item, .style = st });
@@ -282,18 +307,24 @@ pub const Builder = struct {
                 },
                 else => {},
             }
-            for (src[i..end]) |byte| {
+            for (src[i..end], i..) |byte, si| {
                 try out.append(b.arena, byte);
-                try map.append(b.arena, @intCast(i));
+                try map.append(b.arena, @intCast(si));
             }
             b.collapse_space = false;
             i = end;
         }
         if (!collapse) b.collapse_space = false;
-        if (out.items.len > 0) try b.pushTextItem(item, st, out.items, map.items);
+        if (out.items.len > 0) {
+            try map.append(b.arena, @intCast(i)); // end sentinel
+            try b.pushTextItem(item, st, out.items, map.items);
+        }
     }
 
+    /// `map[k]` is the source byte offset of `text[k]`; `map[text.len]` is
+    /// the source offset just past the run.
     fn pushTextItem(b: *Builder, item: Item, st: *const Style, text: []const u8, map: []const u32) !void {
+        std.debug.assert(map.len == text.len + 1);
         const spec = layout.fontSpec(st);
         const fid = b.L.fonts.resolve(spec);
         var glyphs: std.ArrayList(font.Glyph) = .empty;
@@ -677,7 +708,7 @@ pub const Builder = struct {
                             }
                             const last_g = units[kk - 1].glyph;
                             const next_cluster = if (last_g + 1 < it.glyphs.len) it.glyphs[last_g + 1].cluster else @as(u32, @intCast(it.text.len));
-                            const tend = if (next_cluster < it.src_map.len) it.src_map[next_cluster] else (if (it.src_map.len > 0) it.src_map[it.src_map.len - 1] + 1 else 0);
+                            const tend = it.src_map[@min(next_cluster, it.src_map.len - 1)];
 
 
                             try frags.append(out_a, .{

@@ -8,6 +8,7 @@ const style_mod = @import("style.zig");
 const layout = @import("layout.zig");
 const paint = @import("paint.zig");
 const inline_mod = @import("inline.zig");
+const TextOffset = inline_mod.TextOffset;
 
 const Allocator = std.mem.Allocator;
 const Document = dom.Document;
@@ -294,7 +295,7 @@ pub const Interaction = struct {
     // -----------------------------------------------------------------------
 
     pub fn hitTest(ix: *Interaction, x: f32, y: f32) NodeId {
-        const hit = ix.dl.hitTest(x, y);
+        const hit = ix.dl.hitTestLive(x, y, ix.doc);
         if (hit != null_id) return hit;
         return ix.bodyOrRoot();
     }
@@ -312,7 +313,7 @@ pub const Interaction = struct {
     fn setChainState(ix: *Interaction, from: NodeId, comptime field: []const u8, on: bool, stop_at: NodeId) void {
         var cur = from;
         while (cur != null_id and cur != stop_at) : (cur = ix.doc.node(cur).parent) {
-            const n = ix.doc.node(cur);
+            const n = ix.doc.get(cur) orelse return;
             if (n.kind != .element) continue;
             var s = n.state;
             if (@field(s, field) == on) continue;
@@ -359,7 +360,8 @@ pub const Interaction = struct {
         ix.pointer_y = -1;
     }
 
-    fn updateHover(ix: *Interaction, target: NodeId) void {
+    fn updateHover(ix: *Interaction, target_in: NodeId) void {
+        const target = if (target_in != null_id and ix.doc.get(target_in) == null) ix.bodyOrRoot() else target_in;
         const old = ix.doc.hovered;
         if (old == target) return;
         if (old != null_id and ix.doc.get(old) == null) ix.doc.hovered = null_id;
@@ -1328,30 +1330,62 @@ pub const Interaction = struct {
         }
     }
 
+    // -----------------------------------------------------------------------
+    // Value <-> layout offsets. A control's laid-out text differs from its
+    // value (password bullets, placeholder when empty); these are the only
+    // conversions between the two spaces.
+    // -----------------------------------------------------------------------
+
+    pub fn layoutOffset(ix: *const Interaction, id: NodeId, e: *const EditState, value_off: u32) TextOffset {
+        const v = e.text.items;
+        const off = @min(value_off, v.len);
+        if (v.len == 0) return .of(0); // placeholder (or nothing) is shown
+        if (layout.isPassword(ix.doc, id)) {
+            const n = std.unicode.utf8CountCodepoints(v[0..off]) catch off;
+            return .of(@intCast(n * inline_mod.password_bullet.len));
+        }
+        return .of(@intCast(off));
+    }
+
+    pub fn valueOffset(ix: *const Interaction, id: NodeId, e: *const EditState, at: TextOffset) u32 {
+        const v = e.text.items;
+        if (v.len == 0) return 0;
+        if (layout.isPassword(ix.doc, id)) {
+            var remaining = at.int() / inline_mod.password_bullet.len;
+            var i: usize = 0;
+            while (i < v.len and remaining > 0) : (remaining -= 1) {
+                i += std.unicode.utf8ByteSequenceLength(v[i]) catch 1;
+            }
+            return @intCast(@min(i, v.len));
+        }
+        return @intCast(utf8Floor(v, @min(at.int(), v.len)));
+    }
+
+    fn caretRect(ix: *const Interaction, id: NodeId, il: *const inline_mod.InlineLayout, e: *const EditState) ?inline_mod.InlineLayout.Caret {
+        return il.caretAt(id, ix.layoutOffset(id, e, e.caret));
+    }
+
     fn verticalMove(ix: *Interaction, id: NodeId, e: *EditState, down: bool) u32 {
         const b = layout.boxOfNode(ix.doc.node(id)) orelse return e.caret;
         const il = b.inline_layout orelse return e.caret;
-        const c = il.caretAt(id, e.caret) orelse return e.caret;
+        const c = ix.caretRect(id, il, e) orelse return e.caret;
         const gx = e.goal_x orelse c.x;
         e.goal_x = gx;
         const ny = if (down) c.y + c.h * 1.5 else c.y - c.h * 0.5;
         if (ny < 0) return 0;
         if (ny > il.height) return @intCast(e.text.items.len);
-        return il.offsetAt(id, gx, ny) orelse e.caret;
+        const at = il.offsetAt(id, gx, ny) orelse return e.caret;
+        return ix.valueOffset(id, e, at);
     }
 
-    /// Map a window point to a text offset inside a text control.
+    /// Map a window point to a value offset inside a text control.
     pub fn offsetAtPoint(ix: *Interaction, id: NodeId, x: f32, y: f32) ?u32 {
         const origin = ix.contentOrigin(id) orelse return null;
         const b = layout.boxOfNode(ix.doc.node(id)) orelse return null;
         const il = b.inline_layout orelse return 0;
-        const e = ix.edits.get(id);
-        const sx: f32 = if (e) |s| s.scroll_x else 0;
-        const sy: f32 = if (e) |s| s.scroll_y else 0;
-        // an empty control lays out its placeholder; offsets index the value
-        const len: u32 = @intCast(if (e) |s| s.text.items.len else ix.L.controlText(id).len);
-        if (len == 0) return 0;
-        return @min(len, il.offsetAt(id, x - origin[0] + sx, y - origin[1] + sy) orelse 0);
+        const e = ix.editState(id) catch return null;
+        const at = il.offsetAt(id, x - origin[0] + e.scroll_x, y - origin[1] + e.scroll_y) orelse return 0;
+        return ix.valueOffset(id, e, at);
     }
 
     /// Absolute content-box origin of a laid-out element (ignores transforms).
@@ -1381,7 +1415,7 @@ pub const Interaction = struct {
         const e = ix.edits.get(id) orelse return;
         const b = layout.boxOfNode(ix.doc.node(id)) orelse return;
         const il = b.inline_layout orelse return;
-        const c = il.caretAt(id, e.caret) orelse return;
+        const c = ix.caretRect(id, il, e) orelse return;
         const cw = b.w - b.border.horizontal() - b.padding.horizontal();
         const ch = b.h - b.border.vertical() - b.padding.vertical();
         if (c.x - e.scroll_x > cw - 2) e.scroll_x = c.x - cw + 2;
@@ -1395,7 +1429,7 @@ pub const Interaction = struct {
         const e = ix.edits.get(id) orelse return;
         const b = layout.boxOfNode(ix.doc.node(id)) orelse return;
         const il = b.inline_layout orelse return;
-        const c = il.caretAt(id, e.caret) orelse return;
+        const c = ix.caretRect(id, il, e) orelse return;
         const o = ix.contentOrigin(id) orelse return;
         f(ix.host.ctx, .{ .x = o[0] + c.x - e.scroll_x, .y = o[1] + c.y - e.scroll_y, .w = 1, .h = c.h });
     }

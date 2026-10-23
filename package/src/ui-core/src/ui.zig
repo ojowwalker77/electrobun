@@ -82,17 +82,9 @@ pub const Ui = struct {
         _ = doc;
         const e = ui.ix.edits.get(node) orelse return null;
         if (ui.doc.node(node).getAttr(ui.doc.atoms.type)) |t| if (std.ascii.eqlIgnoreCase(t, "password")) {
-            return passwordMask(ui, e.text.items);
+            return ui.layout.passwordMask(e.text.items);
         };
         return e.text.items;
-    }
-
-    fn passwordMask(ui: *Ui, text: []const u8) []const u8 {
-        const n = std.unicode.utf8CountCodepoints(text) catch text.len;
-        const a = ui.layout.scratch.allocator();
-        const buf = a.alloc(u8, n * 3) catch return "";
-        for (0..n) |i| @memcpy(buf[i * 3 ..][0..3], "\u{2022}");
-        return buf;
     }
 
     fn naturalSize(ctx: ?*anyopaque, doc: *dom.Document, node: dom.NodeId) ?[2]f32 {
@@ -121,7 +113,7 @@ pub const Ui = struct {
         const ui: *Ui = @ptrCast(@alignCast(ctx.?));
         if (ui.doc.focused != node) return null;
         const e = ui.ix.edits.get(node) orelse return null;
-        return .{ .caret = e.caret, .anchor = e.anchor, .scroll_x = e.scroll_x, .scroll_y = e.scroll_y };
+        return .{ .caret = ui.ix.layoutOffset(node, e, e.caret), .anchor = ui.ix.layoutOffset(node, e, e.anchor), .scroll_x = e.scroll_x, .scroll_y = e.scroll_y };
     }
 
     fn observe(doc: *dom.Document, kind: dom.MutationKind, node: dom.NodeId, ctx: ?*anyopaque) void {
@@ -307,6 +299,37 @@ test "clicking into a placeholder puts the caret at the start of the value" {
     _ = try ui.update();
     ui.ix.textInput("b");
     try std.testing.expectEqualStrings("ab", ui.ix.value(t));
+}
+
+test "password caret tracks the bullets, not the value bytes" {
+    const ui = try testUi(
+        \\<style>body { margin: 0; font-size: 10px } input { width: 300px }</style>
+        \\<input id="p" type="password">
+    );
+    defer ui.destroy();
+    const p = try style_mod.querySelector(ui.doc, ui.doc.root, "#p");
+    const o0 = ui.ix.contentOrigin(p).?;
+    ui.ix.pointerDown(o0[0] + 5, o0[1] + 4, 0, .{});
+    ui.ix.pointerUp(o0[0] + 5, o0[1] + 4, 0, .{});
+    var last_x: f32 = -1;
+    var step: f32 = 0;
+    const chars = [_][]const u8{ "h", "u", "n", "t", "é", "r", "2" };
+    for (chars, 0..) |ch, i| {
+        ui.ix.textInput(ch);
+        _ = try ui.update();
+        const il = layout.boxOfNode(ui.doc.node(p)).?.inline_layout.?;
+        const e = ui.ix.edits.get(p).?;
+        const c = il.caretAt(p, ui.ix.layoutOffset(p, e, e.caret)).?;
+        // every keystroke moves the caret right by exactly one bullet
+        if (i == 1) step = c.x - last_x;
+        if (i >= 1) try std.testing.expectApproxEqAbs(step, c.x - last_x, 0.01);
+        try std.testing.expect(c.x > last_x);
+        last_x = c.x;
+    }
+    try std.testing.expectEqualStrings("huntér2", ui.ix.value(p));
+    // clicking past the end maps back to the end of the value
+    const o = ui.ix.contentOrigin(p).?;
+    try std.testing.expectEqual(@as(?u32, "huntér2".len), ui.ix.offsetAtPoint(p, o[0] + 250, o[1] + 4));
 }
 
 test "checkbox, label and typing" {

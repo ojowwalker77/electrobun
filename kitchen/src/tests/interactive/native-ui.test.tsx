@@ -131,24 +131,24 @@ function KitchenSink(props: { toggleDark: () => void }) {
 					<div class="grid">
 						<div class="eb-col" style="gap: 12px">
 							<label class="eb-field"><span class="eb-label">Name</span>
-								<input class="eb-input" placeholder="Ada Lovelace" value={live(() => form.name)} onInput={(e: any) => setForm("name", e.target.value)} /></label>
+								<input class="eb-input" placeholder="Ada Lovelace" value={live(() => form.name)} onInput={(e: any) => setForm((d) => { d.name = e.target.value; })} /></label>
 							<label class="eb-field"><span class="eb-label">Email</span>
-								<input class="eb-input" type="email" placeholder="ada@example.com" value={live(() => form.email)} onInput={(e: any) => setForm("email", e.target.value)} /></label>
+								<input class="eb-input" type="email" placeholder="ada@example.com" value={live(() => form.email)} onInput={(e: any) => setForm((d) => { d.email = e.target.value; })} /></label>
 							<label class="eb-field"><span class="eb-label">Password</span><input class="eb-input" type="password" /></label>
 							<label class="eb-field"><span class="eb-label">Plan</span>
-								<select class="eb-select" onChange={(e: any) => setForm("plan", e.target.value)}>
+								<select class="eb-select" onChange={(e: any) => setForm((d) => { d.plan = e.target.value; })}>
 									<option value="free">Free</option><option value="pro" selected>Pro</option><option value="team">Team</option>
 								</select></label>
 							<label class="eb-field"><span class="eb-label">Bio</span>
-								<textarea class="eb-textarea" rows="3" onInput={(e: any) => setForm("bio", e.target.value)} /></label>
-							<label class="eb-check-row"><span class="eb-switch"><input type="checkbox" checked={live(() => form.notify)} onChange={(e: any) => setForm("notify", e.target.checked)} /><span /></span> Email notifications</label>
+								<textarea class="eb-textarea" rows="3" onInput={(e: any) => setForm((d) => { d.bio = e.target.value; })} /></label>
+							<label class="eb-check-row"><span class="eb-switch"><input type="checkbox" checked={live(() => form.notify)} onChange={(e: any) => setForm((d) => { d.notify = e.target.checked; })} /><span /></span> Email notifications</label>
 							<label class="eb-check-row"><input class="eb-checkbox" type="checkbox" /> I agree</label>
 							<div class="eb-row" style="gap: 12px">
 								<label class="eb-check-row"><input class="eb-radio" type="radio" name="r" checked /> Monthly</label>
 								<label class="eb-check-row"><input class="eb-radio" type="radio" name="r" /> Yearly</label>
 							</div>
 							<label class="eb-field"><span class="eb-label">{live(() => `Volume ${form.volume}`)}</span>
-								<input class="eb-slider" type="range" min="0" max="100" value={live(() => String(form.volume))} onInput={(e: any) => setForm("volume", Number(e.target.value))} /></label>
+								<input class="eb-slider" type="range" min="0" max="100" value={live(() => String(form.volume))} onInput={(e: any) => setForm((d) => { d.volume = Number(e.target.value); })} /></label>
 						</div>
 						<div class="eb-card">
 							<div class="eb-card-header"><div class="eb-card-title">Live values</div></div>
@@ -250,8 +250,8 @@ function KitchenSink(props: { toggleDark: () => void }) {
 			</Show>
 
 			<div class="eb-toasts">
-				<For each={live(toasts)} key={(t: { id: number }) => t.id}>
-					{(t: { msg: string }) => <div class="eb-toast">{t.msg}</div>}
+				<For each={live(toasts)} key={(t) => t.id}>
+					{(t) => <div class="eb-toast">{t.msg}</div>}
 				</For>
 			</div>
 		</div>

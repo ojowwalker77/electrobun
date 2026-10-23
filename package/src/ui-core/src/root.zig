@@ -27,6 +27,7 @@ pub const List = app.List;
 pub const mount = app.mount;
 pub const Event = events.Event;
 pub const ui = @import("ui.zig");
+const fuzz_test = @import("fuzz_test.zig");
 pub const Ui = ui.Ui;
 pub const host_macos = if (@import("builtin").os.tag == .macos) @import("host/macos.zig") else struct {};
 pub const coretext = if (@import("builtin").os.tag == .macos) @import("text/coretext.zig") else struct {};
@@ -38,4 +39,5 @@ pub const css_stylesheet = @import("css/stylesheet.zig");
 
 test {
     @import("std").testing.refAllDecls(@This());
+    _ = fuzz_test;
 }

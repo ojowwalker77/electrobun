@@ -501,6 +501,7 @@ pub const Animator = struct {
     }
 
     pub fn deinit(a: *Animator) void {
+        for (a.running.items) |r| a.freeRunning(r);
         a.running.deinit(a.gpa);
         for (a.keyframes.items) |k| {
             k.arena.deinit();
@@ -599,6 +600,12 @@ pub const Animator = struct {
             .filters => |f| .{ .filters = .{ .list = try a.gpa.dupe(style_mod.Filter, f.list) } },
             else => v,
         };
+    }
+
+    /// A run owns its persisted endpoints; every removal goes through here.
+    fn freeRunning(a: *Animator, r: Running) void {
+        a.freeValue(r.from);
+        a.freeValue(r.to);
     }
 
     fn freeValue(a: *Animator, v: Value) void {
@@ -754,8 +761,7 @@ pub const Animator = struct {
             const r = &a.running.items[i];
             const node = a.doc.get(r.node);
             if (r.done or node == null or style_mod.get(node.?) == null) {
-                a.freeValue(r.from);
-                a.freeValue(r.to);
+                a.freeRunning(r.*);
                 _ = a.running.swapRemove(i);
                 continue;
             }
