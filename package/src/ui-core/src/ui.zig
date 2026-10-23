@@ -512,3 +512,24 @@ test "select popup" {
     try std.testing.expectEqualStrings("a", ui.ix.value(sel));
 }
 
+
+test "nowrap shrink-to-fit boxes fit their text" {
+    // spaces in nowrap text are not break opportunities, so they count
+    // toward min-content (an absolutely positioned tooltip was too narrow)
+    const ui = try testUi(
+        \\<style>body { margin: 0; font-size: 14px } .h { position: relative; display: inline-flex; margin: 50px }
+        \\ .t { position: absolute; left: 50%; bottom: 100%; transform: translateX(-50%); padding: 4px 8px; font-size: 12px; white-space: nowrap }
+        \\ .w { position: absolute; left: 50%; top: 100%; padding: 4px 8px; font-size: 12px }</style>
+        \\<div class="h"><button>Hover me</button><div class="t" id="t">Tooltips are CSS :hover</div><div class="w" id="w">wraps at spaces normally</div></div>
+    );
+    defer ui.destroy();
+    const t = try style_mod.querySelector(ui.doc, ui.doc.root, "#t");
+    const b = layout.boxOfNode(ui.doc.node(t)).?;
+    var text_w: f32 = 0;
+    for (b.inline_layout.?.frags) |f| text_w = @max(text_w, f.x + f.w);
+    try std.testing.expect(b.w - b.padding.horizontal() >= text_w - 0.01);
+    // normal white-space still shrinks to the widest word, not the sum
+    const w = try style_mod.querySelector(ui.doc, ui.doc.root, "#w");
+    const wl = layout.boxOfNode(ui.doc.node(w)).?.inline_layout.?;
+    try std.testing.expect(wl.lines.len > 1);
+}

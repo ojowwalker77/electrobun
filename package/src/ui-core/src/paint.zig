@@ -638,39 +638,46 @@ pub const Painter = struct {
         }
     }
 
-    fn checkmark(p: *Painter, bb: Rect, color: Color) !void {
-        // two strokes approximated with thin rotated rects
-        const cx = bb.x + bb.w / 2;
-        const cy = bb.y + bb.h / 2;
-        const s = @min(bb.w, bb.h) / 13;
-        const parts = [_]struct { x: f32, y: f32, w: f32, angle: f32 }{
-            .{ .x = cx - 3.2 * s, .y = cy + 0.2 * s, .w = 3.6 * s, .angle = 0.785 },
-            .{ .x = cx - 1.0 * s, .y = cy - 0.4 * s, .w = 6.5 * s, .angle = -0.85 },
-        };
-        for (parts) |pt| {
-            const t = geom.Transform.translation(-pt.x, -pt.y).then(geom.Transform.rotation(pt.angle)).then(geom.Transform.translation(pt.x, pt.y));
-            try p.dl.push(.{ .push_transform = t });
-            try p.dl.push(.{ .rect = .{ .rect = .{ .x = pt.x, .y = pt.y - 0.9 * s, .w = pt.w, .h = 1.8 * s }, .radii = Corners.all(0.9 * s), .color = color } });
-            try p.dl.push(.pop_transform);
-        }
+    /// A stroke between two points with round caps (a rotated capsule). Glyphs
+    /// are drawn as polylines through explicit points, so joints always meet.
+    fn segment(p: *Painter, from: geom.Point, to: geom.Point, width: f32, color: Color) !void {
+        const dx = to.x - from.x;
+        const dy = to.y - from.y;
+        const len = @sqrt(dx * dx + dy * dy);
+        const cx = (from.x + to.x) / 2;
+        const cy = (from.y + to.y) / 2;
+        const r = width / 2;
+        const t = geom.Transform.translation(-cx, -cy).then(geom.Transform.rotation(std.math.atan2(dy, dx))).then(geom.Transform.translation(cx, cy));
+        try p.dl.push(.{ .push_transform = t });
+        try p.dl.push(.{ .rect = .{ .rect = .{ .x = cx - len / 2 - r, .y = cy - r, .w = len + width, .h = width }, .radii = Corners.all(r), .color = color } });
+        try p.dl.push(.pop_transform);
     }
 
+    fn polyline(p: *Painter, pts: []const geom.Point, width: f32, color: Color) !void {
+        for (pts[0 .. pts.len - 1], pts[1..]) |from, to| try p.segment(from, to, width, color);
+    }
+
+    /// Checkmark inside a checkbox's border box.
+    fn checkmark(p: *Painter, bb: Rect, color: Color) !void {
+        const u = @min(bb.w, bb.h);
+        const ox = bb.x + (bb.w - u) / 2;
+        const oy = bb.y + (bb.h - u) / 2;
+        const pts = [_]geom.Point{
+            .{ .x = ox + u * 0.26, .y = oy + u * 0.53 },
+            .{ .x = ox + u * 0.43, .y = oy + u * 0.70 },
+            .{ .x = ox + u * 0.75, .y = oy + u * 0.32 },
+        };
+        try p.polyline(&pts, @max(1.5, u * 0.13), color);
+    }
+
+    /// Downward chevron centred on (cx, cy), for select boxes.
     fn chevron(p: *Painter, cx: f32, cy: f32, color: Color) !void {
-        const parts = [_]f32{ 0.785, -0.785 };
-        for (parts, 0..) |ang, i| {
-            const x0 = if (i == 0) cx - 3.5 else cx;
-            const t = geom.Transform.translation(-(x0), -cy).then(geom.Transform.rotation(ang)).then(geom.Transform.translation(x0, cy));
-            _ = t;
-        }
-        const sz: f32 = 4;
-        const t1 = geom.Transform.translation(-cx, -cy).then(geom.Transform.rotation(0.785)).then(geom.Transform.translation(cx - sz * 0.35, cy));
-        try p.dl.push(.{ .push_transform = t1 });
-        try p.dl.push(.{ .rect = .{ .rect = .{ .x = cx - sz / 2 - 0.5, .y = cy - 0.75, .w = sz + 1, .h = 1.5 }, .radii = Corners.all(0.75), .color = color } });
-        try p.dl.push(.pop_transform);
-        const t2 = geom.Transform.translation(-cx, -cy).then(geom.Transform.rotation(-0.785)).then(geom.Transform.translation(cx + sz * 0.35, cy));
-        try p.dl.push(.{ .push_transform = t2 });
-        try p.dl.push(.{ .rect = .{ .rect = .{ .x = cx - sz / 2 - 0.5, .y = cy - 0.75, .w = sz + 1, .h = 1.5 }, .radii = Corners.all(0.75), .color = color } });
-        try p.dl.push(.pop_transform);
+        const pts = [_]geom.Point{
+            .{ .x = cx - 3.5, .y = cy - 1.75 },
+            .{ .x = cx, .y = cy + 1.75 },
+            .{ .x = cx + 3.5, .y = cy - 1.75 },
+        };
+        try p.polyline(&pts, 1.5, color);
     }
 
     pub fn paintSelection(p: *Painter, il: *const inline_mod.InlineLayout, node: NodeId, lo: u32, hi: u32, ox: f32, oy: f32, color: Color) !void {

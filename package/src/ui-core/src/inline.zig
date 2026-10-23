@@ -468,26 +468,33 @@ pub const Builder = struct {
 
         // intrinsic widths
         {
+            // min-content: widest unbreakable segment. Spaces inside a
+            // segment count (nowrap/pre text); only spaces trailing a break
+            // opportunity hang and are excluded.
             var seg: f32 = 0;
+            var trailing: f32 = 0;
             var line: f32 = 0;
             var min: f32 = 0;
             var max: f32 = 0;
             for (units) |u| {
                 if (u.kind == .forced_break) {
                     max = @max(max, line);
-                    min = @max(min, seg);
+                    min = @max(min, seg - trailing);
                     line = 0;
                     seg = 0;
+                    trailing = 0;
                     continue;
                 }
                 line += u.width;
-                if (!u.space) seg += u.width;
+                seg += u.width;
+                trailing = if (u.space) trailing + u.width else 0;
                 if (u.break_after) {
-                    min = @max(min, seg);
+                    min = @max(min, seg - trailing);
                     seg = 0;
+                    trailing = 0;
                 }
             }
-            min = @max(min, seg);
+            min = @max(min, seg - trailing);
             max = @max(max, line);
             il.min_content = min + in.indent;
             il.max_content = max + in.indent;
