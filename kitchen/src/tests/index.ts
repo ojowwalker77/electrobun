@@ -20,7 +20,6 @@ import { sandboxTests } from "./sandbox.test";
 import { trayApiTests } from "./tray-api.test";
 import { runtimeTests } from "./runtime.test";
 import { opfsTests } from "./opfs.test";
-import { uiRuntimeTests } from "./ui-runtime.test";
 import { nativeUiTests } from "./native-ui.test";
 import { appDataProtocolTests } from "./appdata-protocol.test";
 import { webview2InitializationTests } from "./webview2-initialization.test";
@@ -43,9 +42,7 @@ import { wgpuTagTests } from "./interactive/wgpu-tag.test";
 import { fullsizeFrameReproTests } from "./interactive/fullsize-frame-repro.test";
 import { permissionTests } from "./interactive/permissions.test";
 import { devtoolsLayoutTests } from "./interactive/devtools-layout.test";
-import { cottontailUiTests } from "./interactive/cottontail-ui.test";
 import { uiTagTests } from "./interactive/ui-tag.test";
-import { uiInputEventTests } from "./interactive/ui-input-events.test";
 import { uiDomTests } from "./interactive/ui-dom.test";
 import { nativeUiInteractiveTests } from "./interactive/native-ui.test";
 
@@ -65,7 +62,6 @@ export const allTests: TestDefinition[] = [
   ...trayApiTests,
   ...runtimeTests,
   ...opfsTests,
-  ...uiRuntimeTests,
   ...nativeUiTests,
   ...appDataProtocolTests,
   ...webview2InitializationTests,
@@ -92,9 +88,7 @@ export const allTests: TestDefinition[] = [
   ...fullsizeFrameReproTests,
   ...permissionTests,
   ...devtoolsLayoutTests,
-  ...cottontailUiTests,
   ...uiTagTests,
-  ...uiInputEventTests,
   ...uiDomTests,
   ...nativeUiInteractiveTests,
 ];

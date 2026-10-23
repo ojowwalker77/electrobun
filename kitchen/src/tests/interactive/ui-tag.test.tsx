@@ -1,15 +1,11 @@
+/** @jsxImportSource electrobun/main/ui */
 // Interactive test: <electrobun-ui> — a Electrobun UI tree mounted from the
 // main process into a native Dawn layer composited over a webview, anchored
 // by a custom element in the page.
 
 import { defineTest } from "../../test-framework/types";
 import { BrowserWindow } from "electrobun/main";
-import {
-	live,
-	signal,
-	registerUIRoot,
-	ui,
-} from "electrobun/main/ui";
+import { live, signal, registerUIRoot } from "electrobun/main/ui";
 
 const PAGE = `<!doctype html><html><head><style>
 	body { background: #fdf6e3; color: #333; font-family: -apple-system, sans-serif;
@@ -47,38 +43,27 @@ export const uiTagTests = [
 		async run() {
 			const registration = registerUIRoot(
 				"kitchen-overlay",
-				{ background: "#1b1b28" },
+				{
+					background: "#1b1b28",
+					css: `body { margin: 0; height: 100vh; display: flex; flex-direction: column; gap: 10px;
+					              align-items: center; justify-content: center; font: 13px system-ui; color: #e4e4f0 }
+					      .muted { font-size: 12px; color: #8c8ca8 }
+					      .count { font-size: 22px }
+					      button { padding: 10px; border-radius: 8px; background: #232336; color: #e4e4f0;
+					               border: 1px solid #3b3b58 }
+					      button:hover { background: #2c2c44 }`,
+				},
 				() => {
 					const [clicks, setClicks] = signal(0);
-					ui.column(
-						{ grow: 1, pad: 14, gap: 10, justify: "center", align: "center" },
-						() => {
-							ui.text("Native UI in a webview", {
-								size: 12,
-								color: "#8c8ca8",
-							});
-							ui.text(live(() => `clicks: ${clicks()}`), {
-								size: 22,
-								color: "#e4e4f0",
-							});
-							ui.box(
-								{
-									pad: 10,
-									radius: 8,
-									bg: "#232336",
-									border: 1,
-									borderColor: "#3b3b58",
-									onClick: () => setClicks((c) => c + 1),
-								},
-								() => {
-									ui.text("Click me", { size: 13, color: "#e4e4f0" });
-								},
-							);
-						},
+					return (
+						<>
+							<div class="muted">Native UI in a webview</div>
+							<div class="count">{live(() => `clicks: ${clicks()}`)}</div>
+							<button onClick={() => setClicks((c) => c + 1)}>Click me</button>
+						</>
 					);
 				},
 			);
-
 			const win = new BrowserWindow({
 				title: "<electrobun-ui> overlay",
 				html: PAGE,

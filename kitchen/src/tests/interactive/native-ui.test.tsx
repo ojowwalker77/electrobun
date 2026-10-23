@@ -1,10 +1,10 @@
-/** @jsxImportSource electrobun/main/native-ui */
+/** @jsxImportSource electrobun/main/ui */
 // Interactive kitchen sink for the native GPU UI: no webview — the Zig UI
 // core lays out, styles and paints HTML/CSS + warren JSX through Dawn.
 
 import { defineTest } from "../../test-framework/types";
 import { GpuWindow } from "electrobun/main";
-import { createNativeUI, isNativeUIAvailable, live, signal, store, memo, For, Show, Portal } from "electrobun/main/native-ui";
+import { createUI, isUIAvailable, live, signal, store, memo, For, Show, Portal } from "electrobun/main/ui";
 
 const css = `
 	body { margin: 0; }
@@ -263,7 +263,7 @@ export const nativeUiInteractiveTests = [
 		name: "Native GPU UI kitchen sink",
 		category: "Native UI",
 		description:
-			"electrobun/main/native-ui: JSX + CSS laid out and painted by the Zig UI core through Dawn, no webview. Component gallery, forms, todo, motion, text editing and layout.",
+			"electrobun/main/ui: JSX + CSS laid out and painted by the Zig UI core through Dawn, no webview. Component gallery, forms, todo, motion, text editing and layout.",
 		instructions: [
 			"A GpuWindow opened rendering the native UI kitchen sink (no webview).",
 			"1. Components: buttons hover/press, counter increments, toast slides in, dialog opens over a blurred backdrop.",
@@ -278,9 +278,9 @@ export const nativeUiInteractiveTests = [
 		interactive: true,
 		timeout: 900000,
 		async run({ log }) {
-			if (!isNativeUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
+			if (!isUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
 			const win = new GpuWindow({ title: "Native UI kitchen sink", frame: { x: 160, y: 90, width: 980, height: 760 } });
-			const ui = createNativeUI(win, { css, components: true });
+			const ui = createUI(win, { css, components: true });
 			let dark = !!process.env["NATIVE_UI_SINK_DARK"];
 			if (dark) ui.setDark(true);
 			ui.render(() => <KitchenSink toggleDark={() => ui.setDark((dark = !dark))} />);

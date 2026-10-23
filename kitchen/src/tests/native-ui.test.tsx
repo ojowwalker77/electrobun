@@ -1,22 +1,22 @@
-/** @jsxImportSource electrobun/main/native-ui */
+/** @jsxImportSource electrobun/main/ui */
 // Automated tests for the native GPU UI (electrobun/main/native-ui): HTML/CSS
 // and warren JSX rendered by the Zig UI core into a GpuWindow through Dawn.
 // Input is synthesized through the same engine path native events take.
 
 import { defineTest, expect, sleep } from "../test-framework/types";
 import { GpuWindow } from "electrobun/main";
-import { createNativeUI, isNativeUIAvailable, live, signal, store, For, type NativeUI } from "electrobun/main/native-ui";
+import { createUI, isUIAvailable, live, signal, store, For, type UI } from "electrobun/main/ui";
 
 async function withUI(
 	title: string,
 	css: string,
 	app: () => unknown,
-	fn: (ui: NativeUI) => Promise<void>,
+	fn: (ui: UI) => Promise<void>,
 	size = { width: 480, height: 360 },
 ) {
-	if (!isNativeUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
+	if (!isUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
 	const win = new GpuWindow({ title, frame: { x: 120, y: 120, ...size } });
-	const ui = createNativeUI(win, { css, components: true });
+	const ui = createUI(win, { css, components: true });
 	try {
 		ui.render(app);
 		await ui.nextFrame();

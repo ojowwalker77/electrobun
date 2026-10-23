@@ -54,9 +54,6 @@ export const ELECTROBUN_JAVASCRIPT_SDK_EXPORTS = {
 	"./main/ui": "api/sdks/main/entries/ui.ts",
 	"./main/ui/jsx-runtime": "api/sdks/main/ui/jsx-runtime.ts",
 	"./main/ui/jsx-dev-runtime": "api/sdks/main/ui/jsx-dev-runtime.ts",
-	"./main/native-ui": "api/sdks/main/entries/native-ui.ts",
-	"./main/native-ui/jsx-runtime": "api/sdks/main/ui/native/jsx-runtime.ts",
-	"./main/native-ui/jsx-dev-runtime": "api/sdks/main/ui/native/jsx-dev-runtime.ts",
 	"./main/updater": "api/sdks/main/entries/updater.ts",
 	"./main/utils": "api/sdks/main/entries/utils.ts",
 	"./main/webgpu": "api/sdks/main/entries/webgpu.ts",
@@ -202,7 +199,9 @@ function targetRuntimeLayout(
 				: windows
 					? "webgpu_dawn.dll"
 					: "libwebgpu_dawn.so",
-		wgpuAuxiliaryLibraries: windows ? ["d3dcompiler_47.dll"] : [],
+		// shipped next to Dawn whenever bundleWGPU is on; the Electrobun UI
+		// engine (libElectrobunUI) renders through Dawn
+		wgpuAuxiliaryLibraries: windows ? ["d3dcompiler_47.dll"] : target.os === "macos" ? ["libElectrobunUI.dylib"] : [],
 		processHelper: `process_helper${extension}`,
 		bsdiff: `bsdiff${extension}`,
 		bspatch: `bspatch${extension}`,

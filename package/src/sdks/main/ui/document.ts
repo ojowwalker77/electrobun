@@ -58,9 +58,6 @@ class CommandBuffer {
 	}
 }
 
-function cstr(s: string): Uint8Array {
-	return enc.encode(s.length ? s : "\0").subarray(0, s.length ? undefined : 0) as Uint8Array;
-}
 
 function strArgs(s: string): [Pointer, number] {
 	const b = enc.encode(s);
@@ -256,7 +253,7 @@ function createStyle(el: NativeElement): Record<string, any> {
 		set(target, key, value) {
 			if (typeof key !== "string") return false;
 			if (key === "cssText") {
-				target.cssText = value;
+				target["cssText"] = value;
 				return true;
 			}
 			api.setProperty(key, value);
@@ -364,7 +361,10 @@ export class NativeElement extends NativeNode {
 	}
 	set value(v: string) {
 		// <option>.value reflects its attribute, which <select> reads
-		if (this.localName === "option") return this.setAttribute("value", String(v ?? ""));
+		if (this.localName === "option") {
+			this.setAttribute("value", String(v ?? ""));
+			return;
+		}
 		this.ownerDocument.cmd(Op.setValue).u32(this.id);
 		this.ownerDocument.buf.str(v == null ? "" : String(v));
 		this.ownerDocument.valueCache.set(this.id, String(v ?? ""));
@@ -605,10 +605,10 @@ export class NativeDocument {
 		if (this.disposed) return;
 		this.flush();
 		const lib = uiLib();
-		const pending = lib.ebui_pending_events(this.ui);
+		const pending = Number(lib.ebui_pending_events(this.ui));
 		if (pending === 0) return;
 		if (pending > this.pollBuf.length) this.pollBuf = new Uint8Array(pending * 2);
-		const n = lib.ebui_poll_events(this.ui, ptr(this.pollBuf), this.pollBuf.length);
+		const n = Number(lib.ebui_poll_events(this.ui, ptr(this.pollBuf), this.pollBuf.length));
 		const view = new DataView(this.pollBuf.buffer, 0, n);
 		let o = 0;
 		const str = () => {
