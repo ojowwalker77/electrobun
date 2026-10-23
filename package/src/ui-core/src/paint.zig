@@ -245,6 +245,7 @@ pub const Painter = struct {
             try p.dl.push(.{ .push_layer = .{ .opacity = st.opacity, .bounds = bb, .filters = st.filter, .backdrop = st.backdrop_filter, .radii = radiiOf(st, bb) } });
             pushed_layer = true;
         }
+        const layer_cmd = if (pushed_layer) p.dl.cmds.items.len - 1 else 0;
 
         var deferred: std.ArrayList(Deferred) = .empty;
         try p.paintElement(it, st, box, x, y, &deferred, true);
@@ -260,11 +261,68 @@ pub const Painter = struct {
         // painting them first among deferred (normal flow is already emitted)
         for (deferred.items) |d| try p.paintDeferred(d);
 
-        if (pushed_layer) try p.dl.push(.pop_layer);
+        if (pushed_layer) {
+            // the layer must cover everything painted into it: shadows and
+            // overflowing descendants extend past the border box
+            const cmds = p.dl.cmds.items;
+            if (inkBounds(cmds[layer_cmd + 1 ..])) |ink| {
+                const l = &cmds[layer_cmd].push_layer;
+                l.bounds = l.bounds.unite(ink);
+            }
+            try p.dl.push(.pop_layer);
+        }
         if (pushed_transform) {
             try p.dl.push(.pop_transform);
             _ = p.transforms.pop();
         }
+    }
+
+    /// Union of the ink rects of `cmds`, in the coordinate space they start
+    /// in (nested transforms are applied the way the renderers apply them).
+    fn inkBounds(cmds: []const Cmd) ?Rect {
+        var stack: [32]geom.Transform = undefined;
+        var depth: usize = 0;
+        var cur = geom.Transform.identity;
+        var acc: ?Rect = null;
+        for (cmds) |c| {
+            const r: ?Rect = switch (c) {
+                .rect => |x| x.rect,
+                .border => |x| x.rect,
+                .shadow => |x| if (x.inset) x.box else x.box.outset(x.spread + x.blur * 1.5 + 1).translate(x.offset_x, x.offset_y),
+                .gradient => |x| x.rect,
+                .image => |x| x.rect,
+                .surface => |x| x.rect,
+                .glyphs => |x| blk: {
+                    if (x.glyphs.len == 0) break :blk null;
+                    var g: ?Rect = null;
+                    for (x.glyphs) |gi| {
+                        const gr = Rect{ .x = gi.x - x.size * 0.25, .y = gi.y - x.size * 1.25, .w = x.size * 1.5, .h = x.size * 1.75 };
+                        g = if (g) |prev| prev.unite(gr) else gr;
+                    }
+                    if (x.shadow) |sh| if (g) |gg| {
+                        g = gg.unite(gg.outset(sh.blur * 1.5 + 1).translate(sh.x, sh.y));
+                    };
+                    break :blk g;
+                },
+                .push_transform => |t| {
+                    if (depth < stack.len) stack[depth] = cur;
+                    depth += 1;
+                    cur = t.then(cur);
+                    continue;
+                },
+                .pop_transform => {
+                    if (depth > 0) depth -= 1;
+                    cur = if (depth < stack.len) stack[depth] else geom.Transform.identity;
+                    continue;
+                },
+                else => null,
+            };
+            if (r) |rr| {
+                const br = cur.boundsOf(rr);
+                acc = if (acc) |prev| prev.unite(br) else br;
+            }
+        }
+        return acc;
     }
 
     fn paintDeferred(p: *Painter, d: Deferred) !void {

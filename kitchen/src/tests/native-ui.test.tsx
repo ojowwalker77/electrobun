@@ -160,6 +160,74 @@ export const nativeUiTests = [
 	}),
 
 	defineTest({
+		name: "Native UI: typing into an input with a placeholder",
+		category: "Native UI",
+		description: "Clicking over placeholder text puts the caret at the start of the (empty) value; typing replaces the placeholder.",
+		async run({ log }) {
+			await withUI(
+				"native-ui-placeholder",
+				base,
+				() => <input id="p" class="eb-input" placeholder="Ada Lovelace" style="width: 260px; margin: 20px" />,
+				async (ui) => {
+					const input = ui.querySelector("#p")!;
+					const r = input.getBoundingClientRect();
+					await ui.simulate.click({ x: r.x + 60, y: r.y + r.height / 2 });
+					await ui.simulate.type("Grace");
+					await ui.simulate.type(" Hopper");
+					expect(input.value).toBe("Grace Hopper");
+					log(`value=${input.value}`);
+				},
+			);
+		},
+	}),
+
+	defineTest({
+		name: "Native UI: entrance animation ends on the cascaded style",
+		category: "Native UI",
+		description: "A toast's keyframe entrance (opacity + transform) must leave its blurred box-shadow exactly as a fresh restyle would paint it.",
+		async run({ log }) {
+			await withUI(
+				"native-ui-toast",
+				`${base} body { background: #fff }`,
+				() => (
+					<div class="eb-app" style="padding: 40px">
+						<div class="eb-toast" id="toast">Saved!</div>
+					</div>
+				),
+				async (ui) => {
+					const toast = ui.querySelector("#toast")!;
+					// restart the entrance so we can sample it mid-flight
+					toast.className = "";
+					await ui.nextFrame();
+					toast.className = "eb-toast";
+					await ui.nextFrame();
+					const r0 = toast.getBoundingClientRect();
+					const mid = await Promise.all([6, 12, 20, 40].map((d) => ui.pixel(Math.round(r0.x + r0.width / 2), Math.round(r0.y + r0.height + d))));
+					log(`mid-animation shadow ${JSON.stringify(mid)}`);
+					// a faded-in shadow is never darker than the settled one; far away it is background
+					expect(mid[3]![0]!).toBeGreaterThan(250);
+					// ...but the shadow is visible while fading in (not clipped to the border box)
+					expect(mid[1]![0]!).toBeLessThan(255);
+					await sleep(400);
+					await ui.nextFrame();
+					const r = toast.getBoundingClientRect();
+					// points in the shadow falloff below the toast
+					const pts = [6, 12, 20].map((d) => ({ x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height + d) }));
+					const after = await Promise.all(pts.map((p) => ui.pixel(p.x, p.y)));
+					// force a restyle without changing any styles
+					toast.setAttribute("data-poke", "1");
+					await ui.nextFrame();
+					const fresh = await Promise.all(pts.map((p) => ui.pixel(p.x, p.y)));
+					for (let i = 0; i < pts.length; i++) near(after[i]!, fresh[i]!, 2);
+					// a blurred shadow fades out with distance
+					expect(fresh[0]![0]!).toBeLessThan(fresh[2]![0]! + 1);
+					log(`shadow ${JSON.stringify(after)} == ${JSON.stringify(fresh)}`);
+				},
+			);
+		},
+	}),
+
+	defineTest({
 		name: "Native UI: hover sweep over styled components",
 		category: "Native UI",
 		description: "Sweeps the pointer across nav items, buttons and a placeholder input repeatedly; paint-only restyles must not leave stale style pointers in cached layout.",

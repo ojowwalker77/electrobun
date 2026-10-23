@@ -291,6 +291,24 @@ test "paint-only restyles keep cached inline style pointers valid" {
     try std.testing.expect(style_mod.of(ui.doc, b).color.eql(geom.Color.hex(0x111111)));
 }
 
+test "clicking into a placeholder puts the caret at the start of the value" {
+    const ui = try testUi(
+        \\<style>body { margin: 0; font-size: 10px } input { width: 300px }</style>
+        \\<input id="t" placeholder="Ada Lovelace">
+    );
+    defer ui.destroy();
+    const t = try style_mod.querySelector(ui.doc, ui.doc.root, "#t");
+    const o = ui.ix.contentOrigin(t).?;
+    // press over the middle of the placeholder text
+    ui.ix.pointerDown(o[0] + 30, o[1] + 4, 0, .{});
+    ui.ix.pointerUp(o[0] + 30, o[1] + 4, 0, .{});
+    _ = try ui.update();
+    ui.ix.textInput("a");
+    _ = try ui.update();
+    ui.ix.textInput("b");
+    try std.testing.expectEqualStrings("ab", ui.ix.value(t));
+}
+
 test "checkbox, label and typing" {
     const ui = try testUi(
         \\<style>body { margin: 0; font-size: 10px }</style>
@@ -369,6 +387,57 @@ test "css transitions and keyframes" {
     ui.tick(2.0);
     _ = try ui.update();
     try std.testing.expectApproxEqAbs(@as(f32, 100), layout.boxOfNode(ui.doc.node(b)).?.w, 0.5);
+}
+
+test "finished animations restore cascaded values without a restyle trigger" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 }
+        \\ @keyframes in { from { opacity: 0; transform: translateY(8px) scale(.98) } }
+        \\ .t { width: 50px; height: 20px; box-shadow: 0 4px 12px rgba(0,0,0,.2); animation: in .2s ease-out }
+        \\ .m { width: 50px; height: 20px; transform: translateX(0px); transition: transform .2s linear }
+        \\ .m.on { transform: translateX(40px) }</style>
+        \\<div class="t" id="t"></div><div class="m" id="m"></div>
+    );
+    defer ui.destroy();
+    const t = try style_mod.querySelector(ui.doc, ui.doc.root, "#t");
+    const m = try style_mod.querySelector(ui.doc, ui.doc.root, "#m");
+    try ui.doc.setAttribute(m, "class", "m on");
+    var now: f64 = 0;
+    while (now < 0.6) : (now += 1.0 / 60.0) {
+        ui.tick(now);
+        _ = try ui.update();
+    }
+    const ts = style_mod.of(ui.doc, t);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), ts.opacity, 0.001);
+    try std.testing.expectEqual(@as(usize, 0), ts.transform.len);
+    try std.testing.expectEqual(@as(usize, 1), ts.box_shadow.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 12), ts.box_shadow[0].blur, 0.001);
+    // the transition's end value is the cascaded one, not frame-arena data
+    const ms = style_mod.of(ui.doc, m);
+    try std.testing.expectEqual(@as(usize, 1), ms.transform.len);
+    try std.testing.expect(!ui.wantsFrames());
+}
+
+test "opacity layers cover box-shadow and overflowing descendants" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 } .l { position: absolute; left: 50px; top: 50px; width: 100px; height: 40px; opacity: .5; box-shadow: 0 10px 20px #000 }
+        \\ .o { position: absolute; left: 90px; top: 60px; width: 30px; height: 30px; background: red }</style>
+        \\<div class="l"><div class="o"></div></div>
+    );
+    defer ui.destroy();
+    var found = false;
+    for (ui.dl.cmds.items) |c| switch (c) {
+        .push_layer => |l| {
+            found = true;
+            // border box is 50..150 x 50..90; shadow reaches ~30px further down
+            try std.testing.expect(l.bounds.y + l.bounds.h >= 90 + 10 + 25);
+            try std.testing.expect(l.bounds.x <= 50 - 25);
+            // the absolutely positioned child overflows to x = 170
+            try std.testing.expect(l.bounds.x + l.bounds.w >= 170);
+        },
+        else => {},
+    };
+    try std.testing.expect(found);
 }
 
 test "springs" {

@@ -769,7 +769,12 @@ pub const Animator = struct {
                     } else {
                         const x = if (r.duration <= 0) 1 else std.math.clamp(elapsed / r.duration, 0, 1);
                         v = Value.lerp(r.from, r.to, ease(r.timing, x), fa);
-                        if (x >= 1) r.done = true;
+                        if (x >= 1) {
+                            r.done = true;
+                            // the run is dropped next frame: restyle so the
+                            // cascaded end value replaces this frame's value
+                            a.doc.markStyleDirty(r.node);
+                        }
                     }
                 },
                 .spring => if (r.resting) {
@@ -820,8 +825,15 @@ pub const Animator = struct {
             iter = 0;
         }
         if (iter >= an.iterations) {
-            k.finished = true;
-            if (an.fill != .forwards and an.fill != .both) return;
+            const holds = an.fill == .forwards or an.fill == .both;
+            if (k.finished and !holds) return;
+            if (!k.finished) {
+                k.finished = true;
+                // Without fill the cascaded values apply again: restyle next
+                // frame. This frame still writes the end values so the style
+                // never keeps list data from the frame arena being reset.
+                if (!holds) a.doc.markStyleDirty(k.node);
+            }
             iter = an.iterations;
         }
         var whole = @floor(iter);

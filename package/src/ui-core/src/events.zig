@@ -1210,7 +1210,9 @@ pub const Interaction = struct {
     }
 
     fn replaceSelection(ix: *Interaction, id: NodeId, e: *EditState, text: []const u8, undoable: bool) void {
-        const sel = e.selection();
+        const len: u32 = @intCast(e.text.items.len);
+        const raw = e.selection();
+        const sel = [2]u32{ @min(raw[0], len), @min(raw[1], len) };
         if (sel[0] == sel[1] and text.len == 0) return;
         // maxlength
         var insert = text;
@@ -1346,7 +1348,10 @@ pub const Interaction = struct {
         const e = ix.edits.get(id);
         const sx: f32 = if (e) |s| s.scroll_x else 0;
         const sy: f32 = if (e) |s| s.scroll_y else 0;
-        return il.offsetAt(id, x - origin[0] + sx, y - origin[1] + sy) orelse 0;
+        // an empty control lays out its placeholder; offsets index the value
+        const len: u32 = @intCast(if (e) |s| s.text.items.len else ix.L.controlText(id).len);
+        if (len == 0) return 0;
+        return @min(len, il.offsetAt(id, x - origin[0] + sx, y - origin[1] + sy) orelse 0);
     }
 
     /// Absolute content-box origin of a laid-out element (ignores transforms).
