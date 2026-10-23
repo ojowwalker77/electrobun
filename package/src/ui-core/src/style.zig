@@ -518,12 +518,15 @@ pub const Engine = struct {
             // text nodes get an anonymous-box style: inherited values only
             if (n.kind == .text and (force or deep or n.flags.style_dirty or n.style == null)) {
                 if (parent) |p| {
-                    const old = get(n);
-                    const ns = try e.gpa.create(NodeStyle);
-                    ns.* = .{ .s = inheritFrom(&p.s), .arena = std.heap.ArenaAllocator.init(e.gpa) };
+                    // updated in place: inline layouts cache pointers to it
+                    const ns = get(n) orelse blk: {
+                        const fresh = try e.gpa.create(NodeStyle);
+                        fresh.* = .{ .s = .{}, .arena = std.heap.ArenaAllocator.init(e.gpa) };
+                        n.style = fresh;
+                        break :blk fresh;
+                    };
+                    ns.s = inheritFrom(&p.s);
                     ns.s.display = .inline_;
-                    n.style = ns;
-                    if (old) |o| destroyNodeStyle(e.gpa, o);
                 }
             }
             n.flags.style_dirty = false;
@@ -537,21 +540,31 @@ pub const Engine = struct {
         if (needs) {
             const old = get(n);
             const fresh = try e.computeNode(doc, id, if (parent) |p| &p.s else null);
-            if (old) |o| {
-                child_force = !inheritedEqual(&o.s, &fresh.s, e);
-            } else child_force = true;
-            if (doc.documentElement() == id) {
-                if (e.root_font_size != fresh.s.font_size) child_force = true;
-                e.root_font_size = fresh.s.font_size;
-            }
-            if (old == null or !layoutEqual(&old.?.s, &fresh.s)) {
+            if (doc.documentElement() == id) e.root_font_size = fresh.s.font_size;
+            // Children always recompute: they shallow-copy inherited slices
+            // (font_family, text_shadow, custom properties) out of this
+            // node's arena, which is replaced below.
+            child_force = true;
+            const layout_changed = if (old) |o| !layoutEqual(&o.s, &fresh.s) or hasPseudo(o) or hasPseudo(fresh) else true;
+            if (layout_changed) {
                 n.flags.layout_dirty = true;
                 n.flags.text_dirty = true;
                 doc.markLayoutDirty(id);
             }
             if (e.on_style_change) |cb| cb(e.on_style_change_ctx, doc, id, if (old) |o| &o.s else null, &fresh.s);
-            n.style = fresh;
-            if (old) |o| destroyNodeStyle(e.gpa, o);
+            if (old) |o| {
+                // Keep the NodeStyle address stable: inline layouts cache
+                // *Style pointers and are reused when layout is unchanged.
+                // Pseudo styles live in the arena, so their presence above
+                // forces a relayout that drops those cached pointers.
+                o.s = fresh.s;
+                o.before = fresh.before;
+                o.after = fresh.after;
+                o.placeholder = fresh.placeholder;
+                o.marker = fresh.marker;
+                std.mem.swap(std.heap.ArenaAllocator, &o.arena, &fresh.arena);
+                destroyNodeStyle(e.gpa, fresh);
+            } else n.style = fresh;
             e.restyled += 1;
             doc.needs_paint = true;
         }
@@ -689,6 +702,10 @@ const Match = struct {
     }
 };
 
+fn hasPseudo(ns: *const NodeStyle) bool {
+    return ns.before != null or ns.after != null or ns.placeholder != null or ns.marker != null;
+}
+
 pub fn destroyNodeStyle(gpa: Allocator, ns: *NodeStyle) void {
     ns.arena.deinit();
     gpa.destroy(ns);
@@ -698,24 +715,6 @@ pub fn destroyNodeStyle(gpa: Allocator, ns: *NodeStyle) void {
 pub fn finalizeNode(doc: *Document, n: *Node) void {
     if (get(n)) |ns| destroyNodeStyle(doc.gpa, ns);
     n.style = null;
-}
-
-fn inheritedEqual(a: *const Style, b: *const Style, e: *const Engine) bool {
-    _ = e;
-    if (!a.color.eql(b.color)) return false;
-    if (a.font_size != b.font_size or a.font_weight != b.font_weight or a.font_style != b.font_style) return false;
-    if (!std.meta.eql(a.line_height, b.line_height)) return false;
-    if (a.letter_spacing != b.letter_spacing or a.word_spacing != b.word_spacing) return false;
-    if (a.text_align != b.text_align or a.white_space != b.white_space or a.visibility != b.visibility) return false;
-    if (a.cursor != b.cursor or a.pointer_events != b.pointer_events or a.list_style_type != b.list_style_type) return false;
-    if (a.word_break != b.word_break or a.overflow_wrap != b.overflow_wrap or a.text_transform != b.text_transform) return false;
-    if (!std.meta.eql(a.text_indent, b.text_indent) or a.tab_size != b.tab_size) return false;
-    if (!std.meta.eql(a.caret_color, b.caret_color) or !std.meta.eql(a.accent_color, b.accent_color)) return false;
-    if (a.user_select != b.user_select) return false;
-    if (!fontFamilyEqual(a.font_family, b.font_family)) return false;
-    if (a.text_shadow.len != b.text_shadow.len) return false;
-    for (a.text_shadow, b.text_shadow) |x, y| if (!std.meta.eql(x, y)) return false;
-    return customsEqual(a.customs, b.customs);
 }
 
 fn fontFamilyEqual(a: []const []const u8, b: []const []const u8) bool {

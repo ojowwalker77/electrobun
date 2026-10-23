@@ -272,6 +272,25 @@ test "hover restyles and click dispatches" {
     try std.testing.expect(style_mod.of(ui.doc, b).background_color.eql(geom.Color.hex(0x111111)));
 }
 
+test "paint-only restyles keep cached inline style pointers valid" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 } .b { color: #111 } .b:hover { color: #222 } .b::after { content: "!" } .b:hover::after { color: #333 }</style>
+        \\<div class="b" id="b">hello <span>world</span></div>
+    );
+    defer ui.destroy();
+    const b = try style_mod.querySelector(ui.doc, ui.doc.root, "#b");
+    for (0..4) |i| {
+        if (i % 2 == 0) ui.ix.pointerMove(5, 5, .{}) else ui.ix.pointerMove(390, 290, .{});
+        _ = try ui.update();
+        const il = layout.boxOfNode(ui.doc.node(b)).?.inline_layout.?;
+        for (il.frags) |f| {
+            if (f.kind != .text or f.item.pseudo != .none) continue;
+            try std.testing.expect(f.style == style_mod.of(ui.doc, f.item.node));
+        }
+    }
+    try std.testing.expect(style_mod.of(ui.doc, b).color.eql(geom.Color.hex(0x111111)));
+}
+
 test "checkbox, label and typing" {
     const ui = try testUi(
         \\<style>body { margin: 0; font-size: 10px }</style>

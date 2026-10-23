@@ -160,6 +160,44 @@ export const nativeUiTests = [
 	}),
 
 	defineTest({
+		name: "Native UI: hover sweep over styled components",
+		category: "Native UI",
+		description: "Sweeps the pointer across nav items, buttons and a placeholder input repeatedly; paint-only restyles must not leave stale style pointers in cached layout.",
+		async run({ log }) {
+			await withUI(
+				"native-ui-hover-sweep",
+				`${base} .nav { width: 180px; padding: 8px }`,
+				() => (
+					<div class="eb-app" style="display: flex; gap: 16px; padding: 8px">
+						<nav class="nav eb-nav">
+							{["Components", "Forms", "Todo", "Motion", "Text", "Layout"].map((p) => <button class="eb-nav-item">{p}</button>)}
+						</nav>
+						<div style="display: flex; flex-direction: column; gap: 8px">
+							<button class="eb-btn">Primary</button>
+							<button class="eb-btn outline">Outline</button>
+							<input class="eb-input" placeholder="Placeholder text" />
+							<label class="eb-switch"><input type="checkbox" /><span /></label>
+						</div>
+					</div>
+				),
+				async (ui) => {
+					const start = ui.frames;
+					for (let pass = 0; pass < 6; pass++) {
+						for (let y = 10; y < 260; y += 9) {
+							await ui.simulate.move(pass % 2 ? 300 : 90, y);
+						}
+						await ui.nextFrame();
+					}
+					const nav = ui.querySelector(".eb-nav-item")!;
+					expect(nav.getBoundingClientRect().width).toBeGreaterThan(100);
+					expect(ui.frames).toBeGreaterThan(start);
+					log(`swept ${6 * 28} moves over ${ui.frames - start} frames`);
+				},
+			);
+		},
+	}),
+
+	defineTest({
 		name: "Native UI: keyboard focus order and activation",
 		category: "Native UI",
 		description: "Tab moves focus through controls in document order; Enter/Space activate buttons and checkboxes.",
