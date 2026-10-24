@@ -79,6 +79,9 @@ pub fn build(b: *std.Build) void {
     const run_tests = b.addRunArtifact(tests);
     const test_step = b.step("test", "Run UI core tests");
     test_step.dependOn(&run_tests.step);
+    // compile the tests without running them (cross-compilation checks)
+    const test_build = b.step("test-build", "Compile UI core tests without running them");
+    test_build.dependOn(&tests.step);
 }
 
 fn libModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {

@@ -11,6 +11,7 @@ const wgpu = @import("../render/wgpu.zig");
 const gpu = @import("../render/gpu.zig");
 const geom = @import("../geom.zig");
 const a11y = @import("../a11y.zig");
+const dynlib = @import("../platform/dynlib.zig");
 
 const gpa = std.heap.c_allocator;
 
@@ -38,11 +39,16 @@ const Native = struct {
 
 var native: ?Native = null;
 
+/// Electrobun's native wrapper is already loaded in the process; its file
+/// names per platform (CEF builds on Linux use a separate wrapper).
+const native_wrapper_names: []const [:0]const u8 = switch (builtin.os.tag) {
+    .windows => &.{"libNativeWrapper.dll"},
+    .macos => &.{},
+    else => &.{ "libNativeWrapper.so", "libNativeWrapper_cef.so" },
+};
+
 fn sym(comptime T: type, name: [:0]const u8) ?T {
-    // libNativeWrapper is already loaded in the process: global lookup
-    const handle: ?*anyopaque = if (builtin.os.tag == .macos) @ptrFromInt(@as(usize, @bitCast(@as(isize, -2)))) else null;
-    const p = std.c.dlsym(handle, name) orelse return null;
-    return @ptrCast(@alignCast(p));
+    return dynlib.loadedSymbol(T, native_wrapper_names, name);
 }
 
 fn loadNative() ?Native {
@@ -170,10 +176,20 @@ pub export fn ebui_detach_view(ui_id: u32) void {
 }
 
 fn now() f64 {
+    if (builtin.os.tag == .windows) {
+        var freq: i64 = 0;
+        var counter: i64 = 0;
+        _ = QueryPerformanceFrequency(&freq);
+        _ = QueryPerformanceCounter(&counter);
+        return @as(f64, @floatFromInt(counter)) / @as(f64, @floatFromInt(@max(freq, 1)));
+    }
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(f64, @floatFromInt(ts.sec)) + @as(f64, @floatFromInt(ts.nsec)) / 1e9;
 }
+
+extern "kernel32" fn QueryPerformanceFrequency(freq: *i64) callconv(.winapi) c_int;
+extern "kernel32" fn QueryPerformanceCounter(count: *i64) callconv(.winapi) c_int;
 
 fn requestFrameFromCapi(ctx: ?*anyopaque) void {
     const hv: *View = @ptrCast(@alignCast(ctx.?));

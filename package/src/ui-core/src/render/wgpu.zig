@@ -3,6 +3,7 @@
 //! no link-time GPU dependency. Layouts mirror vendor/webgpu/webgpu.h.
 const std = @import("std");
 const builtin = @import("builtin");
+const dynlib = @import("../platform/dynlib.zig");
 
 pub const Instance = *opaque {};
 pub const Adapter = *opaque {};
@@ -479,7 +480,7 @@ pub const BufferMapCallbackInfo = extern struct {
 
 /// Entry points resolved from the Dawn shared library.
 pub const Api = struct {
-    lib: std.DynLib,
+    lib: dynlib.DynLib,
     createInstance: *const fn (?*const InstanceDescriptor) callconv(.c) ?Instance,
     instanceCreateSurface: *const fn (Instance, *const SurfaceDescriptor) callconv(.c) ?Surface,
     instanceRequestAdapter: *const fn (Instance, ?*const RequestAdapterOptions, RequestAdapterCallbackInfo) callconv(.c) Future,
@@ -534,7 +535,7 @@ pub const Api = struct {
     queueRelease: *const fn (Queue) callconv(.c) void,
 
     pub fn load(path: []const u8) !Api {
-        var lib = try std.DynLib.open(path);
+        var lib = try dynlib.DynLib.open(path);
         errdefer lib.close();
         var api: Api = undefined;
         api.lib = lib;
