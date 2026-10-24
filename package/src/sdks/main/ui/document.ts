@@ -6,6 +6,16 @@
 import { ptr, toArrayBuffer, type Pointer } from "bun:ffi";
 import { uiLib } from "./ffi";
 
+/** An element's border box in window content coordinates (CSS px). */
+export interface UIRect {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+	/** false when the element is removed, display:none, hidden, or empty */
+	visible: boolean;
+}
+
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
@@ -692,11 +702,49 @@ export class NativeDocument {
 				}
 				o += 5;
 				this.onHandler?.(name, args);
+			} else if (kind === 3) {
+				// watched element rect changed: client, x, y, w, h, visible
+				const client = view.getUint32(o, true);
+				const rect: UIRect = {
+					x: view.getFloat32(o + 4, true),
+					y: view.getFloat32(o + 8, true),
+					width: view.getFloat32(o + 12, true),
+					height: view.getFloat32(o + 16, true),
+					visible: view.getUint8(o + 20) !== 0,
+				};
+				o += 21;
+				for (const fn of this.rectWatchers.get(client) ?? []) fn(rect);
 			} else break;
 		}
 	}
 
 	onHandler: ((name: string, args: unknown[]) => void) | null = null;
+
+	private rectWatchers = new Map<number, Set<(rect: UIRect) => void>>();
+
+	/**
+	 * Call `fn` with the element's window rect after every frame in which it
+	 * changed (layout, scroll, resize) and when it is hidden or removed. Any
+	 * number of watchers may observe one element; each gets the current rect
+	 * on the next frame. Returns a function that stops watching.
+	 */
+	watchRect(el: NativeElement, fn: (rect: UIRect) => void): () => void {
+		this.flush();
+		const lib = uiLib();
+		const core = lib.ebui_resolve(this.ui, el.id);
+		// (re)registering resets the core's last-reported rect, so every
+		// watcher - including this new one - hears the current rect
+		if (!core || !lib.ebui_watch_rect(this.ui, core, true)) throw new Error("watchRect: element is not in the document");
+		let set = this.rectWatchers.get(el.id);
+		if (!set) this.rectWatchers.set(el.id, (set = new Set()));
+		set.add(fn);
+		return () => {
+			const cur = this.rectWatchers.get(el.id);
+			if (!cur?.delete(fn) || cur.size > 0) return;
+			this.rectWatchers.delete(el.id);
+			if (!this.disposed) lib.ebui_watch_rect(this.ui, lib.ebui_resolve(this.ui, el.id), false);
+		};
+	}
 
 	dispose(): void {
 		this.flush();

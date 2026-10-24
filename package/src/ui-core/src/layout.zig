@@ -948,8 +948,17 @@ pub const Layout = struct {
             const known_content_w: ?f32 = if (in.known_w) |kw| kw - pbw else if (r.w) |rw| rw - pbw else null;
             const lay = try b.finish(.{ .owner = it, .owner_style = st, .avail = if (multiline) known_content_w else null, .perform = in.perform, .clip_x = false });
             il = lay;
-            nat_w = if (n.tag == w.select) lay.max_content + 16 else 0;
-            if (multiline) nat_h = @max(nat_h * 2, lay.height);
+            const line_h = nat_h;
+            // intrinsic sizes as in HTML: `size` (input, default 20) or
+            // `cols` x `rows` (textarea, default 20 x 2) average characters
+            const avg_char = st.font_size * if (multiline) @as(f32, 0.6) else 0.55;
+            nat_w = if (n.tag == w.select)
+                lay.max_content + 16
+            else if (multiline)
+                (attrNumber(n, w.cols) orelse 20) * avg_char
+            else
+                (attrNumber(n, w.size) orelse 20) * avg_char;
+            if (multiline) nat_h = line_h * (attrNumber(n, w.rows) orelse 2);
         } else if (n.tag == w.img) {
             if (L.hooks.natural_size) |f| if (f(L.hooks.ctx, doc, it.node)) |sz| {
                 nat_w = sz[0];
@@ -1909,6 +1918,26 @@ test "flex wrap and shrink" {
     try expectRect(t.rect("#c"), 0, 10, 40, 10);
     try expectRect(t.rect("#d"), 0, 20, 50, 5);
     try expectRect(t.rect("#e"), 50, 20, 50, 5);
+}
+
+test "text controls size intrinsically and stretch like other items" {
+    const t = try TestDoc.init(
+        \\<style>body { margin: 0; font-size: 10px; line-height: 10px } .col { display: flex; flex-direction: column; width: 300px }
+        \\ input, textarea { padding: 0; border: 0; font-size: 10px; line-height: 10px }</style>
+        \\<input id="i"><input id="s" size="4"><textarea id="t">a
+        \\b
+        \\c
+        \\d</textarea><div class="col"><input id="f"></div>
+    , 400, 600);
+    defer t.deinit();
+    // block context: intrinsic width from `size` (default 20 avg chars)
+    try std.testing.expectApproxEqAbs(@as(f32, 20 * 5.5), t.rect("#i").w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 4 * 5.5), t.rect("#s").w, 0.01);
+    // textarea: cols x rows, regardless of content (it scrolls)
+    try std.testing.expectApproxEqAbs(@as(f32, 20 * 6), t.rect("#t").w, 0.01);
+    try std.testing.expectApproxEqAbs(@as(f32, 2 * 10), t.rect("#t").h, 0.01);
+    // flex column: stretches to the container like any auto-width item
+    try std.testing.expectApproxEqAbs(@as(f32, 300), t.rect("#f").w, 0.01);
 }
 
 test "flex stretch and content sizing" {

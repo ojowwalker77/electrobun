@@ -34,6 +34,8 @@ pub const Ui = struct {
     owns_fonts: bool,
     layout: layout.Layout,
     dl: paint.DisplayList,
+    /// autofocus element inserted since the last update
+    pending_autofocus: dom.NodeId = dom.null_id,
     ix: events.Interaction,
     animator: anim.Animator,
     images: images.Store,
@@ -117,10 +119,26 @@ pub const Ui = struct {
     }
 
     fn observe(doc: *dom.Document, kind: dom.MutationKind, node: dom.NodeId, ctx: ?*anyopaque) void {
-        _ = doc;
-        _ = kind;
-        _ = node;
-        _ = ctx;
+        const ui: *Ui = @ptrCast(@alignCast(ctx.?));
+        if (kind != .inserted or ui.pending_autofocus != dom.null_id) return;
+        // HTML autofocus: the first autofocus element in an inserted subtree
+        // takes focus once (applied at the next update, if still connected)
+        var cur = node;
+        while (cur != dom.null_id) : (cur = doc.nextInTree(cur, node)) {
+            const n = doc.node(cur);
+            if (n.kind == .element and n.hasAttr(doc.atoms.autofocus)) {
+                ui.pending_autofocus = cur;
+                return;
+            }
+        }
+    }
+
+    fn applyAutofocus(ui: *Ui) void {
+        const id = ui.pending_autofocus;
+        ui.pending_autofocus = dom.null_id;
+        if (id == dom.null_id or ui.doc.get(id) == null) return;
+        if (!ui.doc.isInclusiveAncestor(ui.doc.root, id)) return;
+        ui.ix.focus(id, false);
     }
 
     /// Destroy a node subtree, dropping its listeners and editing state.
@@ -206,6 +224,7 @@ pub const Ui = struct {
 
     /// Run style, layout and paint as needed. Returns true if a new frame is ready.
     pub fn update(ui: *Ui) !bool {
+        ui.applyAutofocus();
         ui.styles.setEnv(.{ .width = ui.width, .height = ui.height, .dark = ui.dark, .reduced_motion = ui.reduced_motion, .resolution = ui.scale });
         ui.animator.now = if (ui.animator.now == 0) ui.now else ui.animator.now;
         ui.animator.reduced_motion = ui.reduced_motion;
@@ -330,6 +349,60 @@ test "password caret tracks the bullets, not the value bytes" {
     // clicking past the end maps back to the end of the value
     const o = ui.ix.contentOrigin(p).?;
     try std.testing.expectEqual(@as(?u32, "huntér2".len), ui.ix.offsetAtPoint(p, o[0] + 250, o[1] + 4));
+}
+
+test "window drag regions click when the window didn't move" {
+    const ui = try testUi(
+        \\<style>body { margin: 0 } #p { width: 120px; height: 40px; -webkit-app-region: drag } #p:active { background: red }</style>
+        \\<div id="p">pill</div>
+    );
+    defer ui.destroy();
+    const p = try style_mod.querySelector(ui.doc, ui.doc.root, "#p");
+    var counter = Counter{};
+    _ = try ui.ix.addListener(p, .click, Counter.cb, &counter);
+    const Drag = struct {
+        var moved = false;
+        fn begin(_: ?*anyopaque) bool {
+            return moved;
+        }
+    };
+    ui.ix.host.begin_window_drag = Drag.begin;
+    // press without moving: the modal drag returns unmoved -> click
+    ui.ix.pointerDown(10, 10, 0, .{});
+    try std.testing.expectEqual(@as(u32, 1), counter.n);
+    try std.testing.expectEqual(@as(u8, 0), ui.ix.buttons);
+    try std.testing.expect(!ui.doc.node(p).state.active);
+    // dragged: no click, and no press state left behind
+    Drag.moved = true;
+    ui.ix.pointerDown(10, 10, 0, .{});
+    try std.testing.expectEqual(@as(u32, 1), counter.n);
+    try std.testing.expectEqual(@as(u8, 0), ui.ix.buttons);
+    try std.testing.expect(!ui.doc.node(p).state.active);
+    try std.testing.expectEqual(dom.null_id, ui.ix.down_target);
+}
+
+test "autofocus focuses an inserted element once" {
+    const ui = try testUi("<style>body { margin: 0 }</style><div id=\"host\"></div>");
+    defer ui.destroy();
+    const host = try style_mod.querySelector(ui.doc, ui.doc.root, "#host");
+    const wrap = try ui.doc.createElement("div");
+    const input = try ui.doc.createElement("input");
+    try ui.doc.setAttribute(input, "autofocus", "");
+    ui.doc.appendChild(wrap, input);
+    ui.doc.appendChild(host, wrap);
+    _ = try ui.update();
+    try std.testing.expectEqual(input, ui.doc.focused);
+    // only on insertion: blurring and updating again doesn't refocus
+    ui.ix.blur();
+    _ = try ui.update();
+    try std.testing.expectEqual(dom.null_id, ui.doc.focused);
+    // an autofocus element removed before the update is ignored
+    const other = try ui.doc.createElement("input");
+    try ui.doc.setAttribute(other, "autofocus", "");
+    ui.doc.appendChild(host, other);
+    ui.destroyNode(other);
+    _ = try ui.update();
+    try std.testing.expectEqual(dom.null_id, ui.doc.focused);
 }
 
 test "checkbox, label and typing" {

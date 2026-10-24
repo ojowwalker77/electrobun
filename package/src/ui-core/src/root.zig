@@ -22,6 +22,8 @@ pub const template = @import("template.zig");
 pub const app = @import("app.zig");
 pub const capi = @import("capi.zig");
 pub const host_electrobun = @import("host/electrobun.zig");
+/// Zig apps in Electrobun windows (see host/electrobun_app.zig)
+pub const electrobun = @import("host/electrobun_app.zig");
 pub const Signal = app.Signal;
 pub const List = app.List;
 pub const mount = app.mount;

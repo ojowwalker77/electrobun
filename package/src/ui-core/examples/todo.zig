@@ -104,8 +104,7 @@ const App = struct {
         \\* { box-sizing: border-box; }
         \\body { margin: 0; background: var(--bg); color: var(--ink); font: 15px system-ui; }
         \\.app { max-width: 560px; margin: 0 auto; padding: 40px 20px; }
-        \\h1 { margin: 0; font-size: 44px; font-weight: 800; letter-spacing: -1.5px;
-        \\     background: linear-gradient(90deg, #6366f1, #ec4899); color: transparent; color: #6366f1; }
+        \\h1 { margin: 0; font-size: 44px; font-weight: 800; letter-spacing: -1.5px; color: var(--brand); }
         \\.sub { margin: 4px 0 20px; color: var(--muted); font-size: 13px; }
         \\.card { background: var(--card); border-radius: 16px; box-shadow: 0 1px 2px rgba(0,0,0,.06), 0 12px 32px rgba(20,24,40,.08); overflow: hidden; }
         \\.new { display: flex; gap: 10px; padding: 16px; border-bottom: 1px solid var(--line); }

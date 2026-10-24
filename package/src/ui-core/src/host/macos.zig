@@ -239,9 +239,12 @@ pub const Window = struct {
         w.ime_rect = r;
     }
 
-    fn beginDrag(ctx: ?*anyopaque) void {
+    fn beginDrag(ctx: ?*anyopaque) bool {
         const w: *Window = @ptrCast(@alignCast(ctx.?));
-        if (w.last_event != null) _ = msg(void, w.window, "performWindowDragWithEvent:", .{w.last_event});
+        if (w.last_event == null) return true;
+        _ = msg(void, w.window, "performWindowDragWithEvent:", .{w.last_event});
+        // the dev host doesn't track the frame: treat any drag as a move
+        return true;
     }
 
     fn requestFrame(ctx: ?*anyopaque) void {

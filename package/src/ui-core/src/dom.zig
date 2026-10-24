@@ -114,7 +114,8 @@ pub const Node = struct {
     }
 };
 
-pub const MutationKind = enum { attribute, child_list, text, state };
+/// `child_list` reports the parent; `inserted` the node that was inserted.
+pub const MutationKind = enum { attribute, child_list, text, state, inserted };
 
 pub const Sensitivity = struct {
     /// state bits that appear in non-subject compounds (e.g. `.group:hover .x`)
@@ -318,6 +319,7 @@ pub const Document = struct {
         doc.markStyleDirty(child);
         doc.markLayoutDirty(child);
         doc.notify(.child_list, parent);
+        doc.notify(.inserted, child);
     }
 
     pub fn removeChild(doc: *Document, child: NodeId) void {
@@ -720,6 +722,7 @@ pub const WellKnown = struct {
     height: Atom,
     rows: Atom,
     cols: Atom,
+    size: Atom,
     min: Atom,
     max: Atom,
     step: Atom,

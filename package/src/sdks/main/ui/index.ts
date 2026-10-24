@@ -9,12 +9,41 @@ import { render as domRender } from "../../../browser/ui/dom";
 import { native as wgpuNative } from "../webGPU";
 import { GpuWindow } from "../core/GpuWindow";
 import { WGPUView } from "../core/WGPUView";
+import { BrowserView } from "../core/BrowserView";
+import { ffi } from "../proc/native";
 import electrobunEventEmitter from "../events/eventEmitter";
 import { uiLib, isNativeUIAvailable as isUIAvailable } from "./ffi";
 import { NativeDocument, NativeElement } from "./document";
 
 export { isUIAvailable, NativeDocument as UIDocument, NativeElement as UINode };
-export type { NativeEvent as UIEvent } from "./document";
+export type { NativeEvent as UIEvent, UIRect } from "./document";
+import type { UIRect } from "./document";
+
+/** Anything that can be positioned over an element: a WGPUView, a
+ * BrowserView, or your own frame setter. */
+export type AnchorTarget =
+	| WGPUView
+	| BrowserView
+	| { setFrame(x: number, y: number, width: number, height: number): void; setHidden?(hidden: boolean): void };
+
+export interface AnchorOptions {
+	/** called after the view is moved/resized (or hidden) */
+	onFrame?: (rect: UIRect) => void;
+}
+
+function placeTarget(target: AnchorTarget, r: UIRect, wasVisible: boolean): void {
+	if (target instanceof BrowserView) {
+		if (r.visible) {
+			target.frame = { x: r.x, y: r.y, width: r.width, height: r.height };
+			ffi.request.resizeWebview({ id: target.id, frame: target.frame, masks: "[]" });
+		}
+		if (r.visible !== wasVisible) ffi.request.webviewSetHidden({ id: target.id, hidden: !r.visible });
+		return;
+	}
+	if (target instanceof WGPUView && target.isRemoved) return;
+	if (r.visible) target.setFrame(r.x, r.y, r.width, r.height);
+	if (r.visible !== wasVisible) target.setHidden?.(!r.visible);
+}
 
 const enc = new TextEncoder();
 
@@ -127,6 +156,30 @@ export class UI {
 		return walk(this.document.body);
 	}
 
+	/**
+	 * Keep a native view (WGPUView, BrowserView, or any `setFrame` target)
+	 * positioned over `element`'s border box. The core reports the element's
+	 * window rect after each frame in which it changed — layout, scrolling,
+	 * window resizes — and when it is hidden or removed, in which case the view
+	 * is hidden too. Native views draw above the UI and are not clipped by
+	 * overflow:hidden ancestors. Returns a function that stops anchoring.
+	 */
+	anchor(element: NativeElement, target: AnchorTarget, options: AnchorOptions = {}): () => void {
+		let visible = true;
+		const stop = this.document.watchRect(element, (r) => {
+			placeTarget(target, r, visible);
+			visible = r.visible;
+			options.onFrame?.(r);
+		});
+		this.anchors.add(stop);
+		return () => {
+			this.anchors.delete(stop);
+			stop();
+		};
+	}
+
+	private anchors = new Set<() => void>();
+
 	setDark(dark: boolean): void {
 		uiLib().ebui_set_dark(this.id, dark);
 	}
@@ -212,6 +265,8 @@ export class UI {
 	destroy(): void {
 		if (this.destroyed) return;
 		this.destroyed = true;
+		for (const stop of this.anchors) stop();
+		this.anchors.clear();
 		if (this.poll) clearInterval(this.poll);
 		this.document.dispose();
 		const lib = uiLib();

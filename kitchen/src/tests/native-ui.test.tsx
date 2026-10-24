@@ -4,24 +4,24 @@
 // Input is synthesized through the same engine path native events take.
 
 import { defineTest, expect, sleep } from "../test-framework/types";
-import { GpuWindow } from "electrobun/main";
+import { GpuWindow, WGPUView } from "electrobun/main";
 import { createUI, isUIAvailable, live, signal, store, For, type UI } from "electrobun/main/ui";
 
 async function withUI(
 	title: string,
 	css: string,
 	app: () => unknown,
-	fn: (ui: UI) => Promise<void>,
+	fn: (ui: UI, win: GpuWindow) => Promise<void>,
 	size = { width: 480, height: 360 },
 ) {
-	if (!isUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
+	if (!isUIAvailable()) throw new Error("libElectrobunUI not found (is bundleWGPU enabled?)");
 	const win = new GpuWindow({ title, frame: { x: 120, y: 120, ...size } });
 	const ui = createUI(win, { css, components: true });
 	try {
 		ui.render(app);
 		await ui.nextFrame();
 		await ui.nextFrame();
-		await fn(ui);
+		await fn(ui, win);
 	} finally {
 		ui.destroy();
 		win.close();
@@ -222,6 +222,99 @@ export const nativeUiTests = [
 					// a blurred shadow fades out with distance
 					expect(fresh[0]![0]!).toBeLessThan(fresh[2]![0]! + 1);
 					log(`shadow ${JSON.stringify(after)} == ${JSON.stringify(fresh)}`);
+				},
+			);
+		},
+	}),
+
+	defineTest({
+		name: "Native UI: forms submit on Enter and via submit buttons",
+		category: "Native UI",
+		description: "Implicit submission: Enter in a text input and clicking a <button> (type=submit by default) each fire the form's submit once.",
+		async run({ log }) {
+			let submits = 0;
+			let typed = "";
+			await withUI(
+				"native-ui-form",
+				base,
+				() => (
+					<form onSubmit={() => submits++} style="margin: 20px; display: flex; gap: 8px">
+						<input id="q" class="eb-input" style="width: 200px" onInput={(e: any) => (typed = e.data)} />
+						<button id="go" class="eb-btn">Add</button>
+					</form>
+				),
+				async (ui) => {
+					await ui.simulate.click(ui.querySelector("#q")!);
+					await ui.simulate.type("milk");
+					await ui.simulate.key("Enter");
+					await sleep(30);
+					ui.document.pump();
+					expect(submits).toBe(1);
+					await ui.simulate.click(ui.querySelector("#go")!);
+					await sleep(30);
+					ui.document.pump();
+					expect(submits).toBe(2);
+					expect(typed).toBe("milk");
+					log(`submits=${submits}`);
+				},
+			);
+		},
+	}),
+
+	defineTest({
+		name: "Native UI: native views anchored to elements follow layout",
+		category: "Native UI",
+		description: "ui.anchor keeps a WGPUView (and any setFrame target) over an element through layout changes, hiding it with the element.",
+		async run({ log }) {
+			const [wide, setWide] = signal(false);
+			const [shown, setShown] = signal(true);
+			await withUI(
+				"native-ui-anchor",
+				`${base} #slot { margin: 30px 0 0 40px; height: 80px; background: #ddd }`,
+				() => (
+					<div style={live(() => (shown() ? "" : "display: none"))}>
+						<div id="slot" style={live(() => `width: ${wide() ? 300 : 120}px`)} />
+					</div>
+				),
+				async (ui, win) => {
+					const slot = ui.querySelector("#slot")!;
+					const view = new WGPUView({ windowId: win.id, frame: { x: 0, y: 0, width: 1, height: 1 }, autoResize: false });
+					const frames: Array<{ x: number; y: number; w: number; h: number }> = [];
+					let hidden = false;
+					const fake = {
+						setFrame: (x: number, y: number, w: number, h: number) => frames.push({ x, y, w, h }),
+						setHidden: (h: boolean) => (hidden = h),
+					};
+					const settle = async () => {
+						for (let i = 0; i < 3; i++) await ui.nextFrame();
+					};
+					const stopView = ui.anchor(slot, view);
+					// several native views may anchor to one element
+					const stopFake = ui.anchor(slot, fake);
+					await settle();
+					const r = slot.getBoundingClientRect();
+					expect(view.frame.x).toBe(r.x);
+					expect(view.frame.y).toBe(r.y);
+					expect(view.frame.width).toBe(120);
+					expect(view.frame.height).toBe(80);
+					setWide(true);
+					await settle();
+					expect(view.frame.width).toBe(300);
+					expect(frames.at(-1)!.w).toBe(300);
+					// unchanged frames are not re-sent
+					const sent = frames.length;
+					await settle();
+					expect(frames.length).toBe(sent);
+					setShown(false);
+					await settle();
+					expect(hidden).toBe(true);
+					setShown(true);
+					await settle();
+					expect(hidden).toBe(false);
+					stopView();
+					stopFake();
+					view.remove();
+					log(`anchored frame ${JSON.stringify(view.frame)} after ${frames.length} updates`);
 				},
 			);
 		},

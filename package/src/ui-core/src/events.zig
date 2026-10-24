@@ -163,7 +163,11 @@ pub const Host = struct {
     clipboard_write: ?*const fn (ctx: ?*anyopaque, text: []const u8) void = null,
     /// caret rectangle for IME candidate window placement (window coords)
     ime_rect: ?*const fn (ctx: ?*anyopaque, r: geom.Rect) void = null,
-    begin_window_drag: ?*const fn (ctx: ?*anyopaque) void = null,
+    /// Start a native window drag from the current press. Hosts whose drag
+    /// is modal (macOS) return when the button is released, reporting
+    /// whether the window moved; the press is then finished here: a press
+    /// that didn't move the window still clicks.
+    begin_window_drag: ?*const fn (ctx: ?*anyopaque) bool = null,
     request_frame: ?*const fn (ctx: ?*anyopaque) void = null,
 };
 
@@ -445,7 +449,10 @@ pub const Interaction = struct {
         if (button == 0) {
             // window drag regions
             if (ix.inDragRegion(x, y)) {
-                if (ix.host.begin_window_drag) |f| f(ix.host.ctx);
+                if (ix.host.begin_window_drag) |f| {
+                    // the drag consumed the release: finish the gesture
+                    if (f(ix.host.ctx)) ix.cancelPress(button) else ix.pointerUp(x, y, button, mods);
+                }
                 return;
             }
             const focus_target = ix.focusableAncestor(target);
@@ -468,6 +475,16 @@ pub const Interaction = struct {
             var cm = Event{ .type = .contextmenu, .target = target, .x = x, .y = y, .button = button, .mods = mods };
             _ = ix.dispatch(&cm);
         }
+    }
+
+    /// End a press without a release event or click (the gesture was taken
+    /// over, e.g. by a window drag).
+    fn cancelPress(ix: *Interaction, button: u8) void {
+        ix.buttons &= ~(@as(u8, 1) << @intCast(@min(button, 7)));
+        if (ix.doc.active != null_id and ix.doc.get(ix.doc.active) != null) ix.setChainState(ix.doc.active, "active", false, null_id);
+        ix.doc.active = null_id;
+        ix.down_target = null_id;
+        ix.drag_select = null_id;
     }
 
     pub fn pointerUp(ix: *Interaction, x: f32, y: f32, button: u8, mods: Modifiers) void {

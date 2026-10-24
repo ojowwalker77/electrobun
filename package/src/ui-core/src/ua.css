@@ -61,8 +61,9 @@ input, textarea {
   display: inline-block; padding: 1px 2px; border: 1px solid #767676; border-radius: 2px;
   background-color: #fff; cursor: text;
 }
-input { width: 150px; }
-textarea { width: 180px; height: 36px; white-space: pre-wrap; overflow: auto; font-family: monospace; }
+/* text inputs and textareas are width/height: auto with an intrinsic size
+   from size / cols / rows (as in browsers), so they stretch in flex and grid */
+textarea { white-space: pre-wrap; overflow: auto; font-family: monospace; }
 input[type=checkbox], input[type=radio] {
   width: 13px; height: 13px; padding: 0; margin: 3px 3px 3px 4px; cursor: default;
   border-radius: 2px; vertical-align: middle;

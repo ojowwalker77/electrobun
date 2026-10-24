@@ -62,6 +62,13 @@ pub fn unlock() void {
     }
 }
 
+pub const WatchedRect = struct {
+    client: u32,
+    /// x, y, w, h in window CSS px; null until first reported
+    rect: ?[4]f32 = null,
+    visible: bool = false,
+};
+
 pub const Instance = struct {
     ui: *ui_mod.Ui,
     rt: reactive.Runtime,
@@ -72,6 +79,9 @@ pub const Instance = struct {
     queue: std.ArrayList(u8) = .empty,
     /// listener ids registered through the ABI: (node, type) -> listener
     listeners: std.AutoHashMapUnmanaged(u64, u32) = .empty,
+    /// elements whose window rect is reported when it changes (native views
+    /// anchored over them): core node -> last reported state
+    watches: std.AutoHashMapUnmanaged(u32, WatchedRect) = .empty,
     wakeup: ?*const fn (ctx: ?*anyopaque) callconv(.c) void = null,
     wakeup_ctx: ?*anyopaque = null,
     /// set by hosts that render this ui (electrobun host)
@@ -124,7 +134,7 @@ fn span(p: ?[*]const u8, len: usize) []const u8 {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-export fn ebui_create() u32 {
+pub export fn ebui_create() u32 {
     lock();
     defer unlock();
     if (instances.items.len == 0) instances.append(gpa, null) catch return 0;
@@ -166,7 +176,7 @@ export fn ebui_create_headless() u32 {
     return inst.id;
 }
 
-export fn ebui_destroy(id: u32) void {
+pub export fn ebui_destroy(id: u32) void {
     lock();
     defer unlock();
     const inst = get(id) orelse return;
@@ -179,6 +189,7 @@ export fn ebui_destroy(id: u32) void {
     inst.ui.destroy();
     inst.queue.deinit(gpa);
     inst.listeners.deinit(gpa);
+    inst.watches.deinit(gpa);
     inst.scratch.deinit();
     inst.string_out.deinit(gpa);
     gpa.destroy(inst);
@@ -404,16 +415,87 @@ export fn ebui_focus(id: u32, node: u32) void {
     if (node == 0) inst.ui.ix.blur() else if (validNode(inst, node)) inst.ui.ix.focus(node, false);
 }
 
+fn borderRect(inst: *Instance, node: u32) ?[4]f32 {
+    const origin = inst.ui.ix.contentOrigin(node) orelse return null;
+    const b = layout.boxOfNode(inst.ui.doc.node(node)) orelse return null;
+    return .{ origin[0] - b.border.left - b.padding.left, origin[1] - b.border.top - b.padding.top, b.w, b.h };
+}
+
 /// Border-box of an element in window coordinates: out = [x, y, w, h].
 export fn ebui_get_rect(id: u32, node: u32, out: *[4]f32) bool {
     lock();
     defer unlock();
     const inst = get(id) orelse return false;
     if (!validNode(inst, node)) return false;
-    const origin = inst.ui.ix.contentOrigin(node) orelse return false;
-    const b = layout.boxOfNode(inst.ui.doc.node(node)) orelse return false;
-    out.* = .{ origin[0] - b.border.left - b.padding.left, origin[1] - b.border.top - b.padding.top, b.w, b.h };
+    out.* = borderRect(inst, node) orelse return false;
     return true;
+}
+
+/// Report `node`'s window rect as `rect` event records (RecordKind.rect)
+/// whenever it changes, after each frame's layout. The record carries the
+/// client id bound to the node. `on = false` stops reporting.
+export fn ebui_watch_rect(id: u32, node: u32, on: bool) bool {
+    lock();
+    defer unlock();
+    const inst = get(id) orelse return false;
+    if (!on) {
+        _ = inst.watches.remove(node);
+        return true;
+    }
+    if (!validNode(inst, node)) return false;
+    inst.watches.put(gpa, node, .{ .client = clientOf(inst.id, node) }) catch return false;
+    // report on the next frame even if nothing else changes
+    if (inst.request_frame) |rf| rf(inst.request_frame_ctx);
+    return true;
+}
+
+/// Whether an element currently occupies space on screen: it is alive, laid
+/// out with a non-empty box, and neither it nor an ancestor is display:none
+/// or visibility:hidden.
+fn watchedVisible(inst: *Instance, node: u32) bool {
+    const doc = inst.ui.doc;
+    var cur = node;
+    while (cur != dom.null_id) {
+        const n = doc.get(cur) orelse return false;
+        if (n.kind == .element) {
+            const st = style_mod.of(doc, cur);
+            if (st.display == .none) return false;
+            if (cur == node and st.visibility != .visible) return false;
+        }
+        cur = n.parent;
+    }
+    return true;
+}
+
+/// Queue rect records for watched elements whose rect or visibility changed.
+/// Hosts call this after updating layout for a frame (under the lock).
+pub fn reportWatchedRects(inst: *Instance) void {
+    if (inst.watches.count() == 0) return;
+    var queued = false;
+    var dead: std.ArrayList(u32) = .empty;
+    defer dead.deinit(gpa);
+    var it = inst.watches.iterator();
+    while (it.next()) |kv| {
+        const node = kv.key_ptr.*;
+        const w = kv.value_ptr;
+        const alive = inst.ui.doc.get(node) != null;
+        const rect: ?[4]f32 = if (alive and watchedVisible(inst, node)) borderRect(inst, node) else null;
+        const visible = if (rect) |r| r[2] > 0 and r[3] > 0 else false;
+        const changed = visible != w.visible or w.rect == null or (rect != null and !std.meta.eql(rect.?, w.rect.?));
+        if (!alive) dead.append(gpa, node) catch {};
+        if (!changed and alive) continue;
+        w.visible = visible;
+        w.rect = rect orelse .{ 0, 0, 0, 0 };
+        // Record: kind u8, client u32, x f32, y f32, w f32, h f32, visible u8
+        const q = &inst.queue;
+        q.append(gpa, @intFromEnum(RecordKind.rect)) catch return;
+        appendU32(q, w.client);
+        for (w.rect.?) |v| appendF32(q, v);
+        q.append(gpa, @intFromBool(visible)) catch return;
+        queued = true;
+    }
+    for (dead.items) |n| _ = inst.watches.remove(n);
+    if (queued) if (inst.wakeup) |wk| wk(inst.wakeup_ctx);
 }
 
 export fn ebui_scroll_into_view(id: u32, node: u32) void {
@@ -608,7 +690,7 @@ export fn ebui_bind_client_id(id: u32, client: u32, node: u32) void {
 // ---------------------------------------------------------------------------
 
 /// Event record kinds in the queue.
-pub const RecordKind = enum(u8) { dom = 1, handler = 2 };
+pub const RecordKind = enum(u8) { dom = 1, handler = 2, rect = 3 };
 
 fn listenerKey(node: u32, t: u8) u64 {
     return (@as(u64, node) << 8) | t;
@@ -1002,7 +1084,9 @@ export fn ebui_update(id: u32, now: f64) bool {
     defer unlock();
     const inst = get(id) orelse return false;
     inst.ui.tick(now);
-    return inst.ui.update() catch false;
+    const changed = inst.ui.update() catch false;
+    reportWatchedRects(inst);
+    return changed;
 }
 
 export fn ebui_wants_frames(id: u32) bool {
@@ -1168,4 +1252,61 @@ test "c abi: commands, events, templates" {
     try std.testing.expect(n2 > 0);
     try std.testing.expectEqual(@as(u8, 2), ev[0]);
     try std.testing.expectEqualStrings("bump", ev[5..9]);
+}
+
+test "c abi: watched rects are reported only when they change" {
+    const id = ebui_create_headless();
+    defer ebui_destroy(id);
+    ebui_resize(id, 400, 300, 1);
+    const css = "body { margin: 0 } #a { position: absolute; left: 10px; top: 20px; width: 100px; height: 50px }";
+    _ = ebui_add_stylesheet(id, css.ptr, css.len);
+    const body = ebui_body(id);
+    const tag = "div";
+    const a = ebui_create_element(id, tag.ptr, tag.len);
+    ebui_insert_before(id, body, a, 0);
+    ebui_set_attribute(id, a, "id".ptr, 2, "a".ptr, 1);
+    ebui_bind_client_id(id, 42, a);
+    try std.testing.expect(ebui_watch_rect(id, a, true));
+
+    const Rec = struct { client: u32, r: [4]f32, visible: bool };
+    const read = struct {
+        fn f(ui_id: u32) ?Rec {
+            var buf: [256]u8 = undefined;
+            const n = ebui_poll_events(ui_id, &buf, buf.len);
+            if (n == 0) return null;
+            std.debug.assert(buf[0] == @intFromEnum(RecordKind.rect) and n == 22);
+            var r: [4]f32 = undefined;
+            for (0..4) |i| r[i] = @bitCast(std.mem.readInt(u32, buf[5 + i * 4 ..][0..4], .little));
+            return .{ .client = std.mem.readInt(u32, buf[1..5], .little), .r = r, .visible = buf[21] == 1 };
+        }
+    }.f;
+
+    _ = ebui_update(id, 0);
+    const first = read(id).?;
+    try std.testing.expectEqual(@as(u32, 42), first.client);
+    try std.testing.expectEqual([4]f32{ 10, 20, 100, 50 }, first.r);
+    try std.testing.expect(first.visible);
+    // no change, no record
+    _ = ebui_update(id, 0.016);
+    try std.testing.expect(read(id) == null);
+    // layout change is reported
+    ebui_set_style(id, a, "width".ptr, 5, "160px".ptr, 5);
+    _ = ebui_update(id, 0.032);
+    try std.testing.expectEqual([4]f32{ 10, 20, 160, 50 }, read(id).?.r);
+    // hidden, then removed
+    ebui_set_style(id, a, "display".ptr, 7, "none".ptr, 4);
+    _ = ebui_update(id, 0.048);
+    try std.testing.expect(!read(id).?.visible);
+    ebui_set_style(id, a, "display".ptr, 7, "block".ptr, 5);
+    _ = ebui_update(id, 0.064);
+    try std.testing.expect(read(id).?.visible);
+    ebui_destroy_node(id, a);
+    _ = ebui_update(id, 0.08);
+    try std.testing.expect(!read(id).?.visible);
+    try std.testing.expectEqual(@as(u32, 0), inst_watch_count(id));
+}
+
+fn inst_watch_count(id: u32) u32 {
+    const inst = get(id) orelse return 0;
+    return inst.watches.count();
 }

@@ -8937,11 +8937,17 @@ extern "C" void wgpuViewGetMetrics(AbstractView *abstractView, double *width,
 }
 
 // Begin a window drag from the current mouse-down event (main thread).
-extern "C" void wgpuViewBeginWindowDrag(AbstractView *abstractView) {
+// Modal: returns once the button is released. Reports whether the window
+// actually moved so the UI engine can still deliver a click for a press in a
+// drag region that wasn't dragged.
+extern "C" bool wgpuViewBeginWindowDrag(AbstractView *abstractView) {
   WGPUInputView *view = uiInputViewOf(abstractView);
   NSEvent *event = [NSApp currentEvent];
-  if (view && view.window && event)
-    [view.window performWindowDragWithEvent:event];
+  if (!view || !view.window || !event) return false;
+  NSPoint before = view.window.frame.origin;
+  [view.window performWindowDragWithEvent:event];
+  NSPoint after = view.window.frame.origin;
+  return before.x != after.x || before.y != after.y;
 }
 
 static NSAccessibilityRole ebaxRole(uint32_t code, NSAccessibilitySubrole *subrole) {

@@ -751,6 +751,9 @@ async function copyApiFiles() {
 	cpSync("src/sdks/zig/electrobun.zig", "dist/zig-sdk/electrobun.zig", {
 		force: true,
 	});
+	// Electrobun UI engine sources: Zig apps link it statically as the
+	// `electrobun_ui` module (zig-sdk/ui/root.zig, next to electrobun.zig)
+	cpSync("src/ui-core/src", "dist/zig-sdk/ui", { recursive: true, force: true });
 	mkdirSync("dist/rust-sdk", { recursive: true });
 	cpSync("src/sdks/rust/electrobun.rs", "dist/rust-sdk/electrobun.rs", {
 		force: true,

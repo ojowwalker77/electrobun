@@ -25,9 +25,9 @@ webview, no browser engine. One C ABI serves every Electrobun backend
 
 ## Using it
 
-* **TypeScript (Electrobun main process):** `import { createNativeUI } from "electrobun/main/native-ui"`
-  with `jsxImportSource: "electrobun/main/native-ui"`. The warren DOM renderer runs on a
-  DOM-compatible shim, so the same JSX renders in a webview. See `templates/native-ui`.
+* **TypeScript (Electrobun main process):** `import { createUIWindow } from "electrobun/main/ui"`
+  with `jsxImportSource: "electrobun/main/ui"`. The warren DOM renderer runs on a
+  DOM-compatible shim, so the same JSX renders in a webview. See `templates/bun-ui`.
 * **Zig:** `const ui = @import("electrobun_ui");` — see `examples/todo.zig` (struct with
   `ui.Signal`/`ui.List` fields + an HTML template + CSS).
 * **Any language:** the C ABI in `src/capi.zig` (templates + named signals/handlers need no

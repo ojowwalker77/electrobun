@@ -27,7 +27,8 @@ const Native = struct {
     setImeRect: *const fn (?*anyopaque, f64, f64, f64, f64) callconv(.c) void,
     getMetrics: *const fn (?*anyopaque, *f64, *f64, *f64) callconv(.c) void,
     getNativeHandle: *const fn (?*anyopaque) callconv(.c) ?*anyopaque,
-    beginWindowDrag: *const fn (?*anyopaque) callconv(.c) void,
+    /// modal on macOS: returns after release, true if the window moved
+    beginWindowDrag: *const fn (?*anyopaque) callconv(.c) bool,
     setCursor: *const fn ([*:0]const u8) callconv(.c) void,
     setA11yHandlers: ?*const fn (?*anyopaque, ?*anyopaque, ?A11yRequestCb, ?A11yActionCb) callconv(.c) void,
     setA11yTree: ?*const fn (?*anyopaque, [*]const u8, usize) callconv(.c) void,
@@ -99,7 +100,7 @@ fn viewFor(ui_id: u32) ?*View {
 
 /// Attach a UI instance to an Electrobun WGPU view (AbstractView*). Call
 /// from any thread; returns false if the native wrapper or Dawn is missing.
-export fn ebui_attach_wgpu_view(ui_id: u32, view: ?*anyopaque, dawn_path: ?[*:0]const u8) bool {
+pub export fn ebui_attach_wgpu_view(ui_id: u32, view: ?*anyopaque, dawn_path: ?[*:0]const u8) bool {
     capi.lock();
     defer capi.unlock();
     const n = loadNative() orelse {
@@ -153,7 +154,7 @@ export fn ebui_attach_wgpu_view(ui_id: u32, view: ?*anyopaque, dawn_path: ?[*:0]
     return true;
 }
 
-export fn ebui_detach_view(ui_id: u32) void {
+pub export fn ebui_detach_view(ui_id: u32) void {
     capi.lock();
     defer capi.unlock();
     const hv = viewFor(ui_id) orelse return;
@@ -304,6 +305,7 @@ fn onFrame(ctx: ?*anyopaque, t: f64) callconv(.c) void {
     }
     ui.tick(now() - hv.start);
     const changed = ui.update() catch false;
+    if (capi.instance(hv.ui_id)) |inst| capi.reportWatchedRects(inst);
     if (changed or hv.force or hv.capture_requested) {
         hv.force = false;
         render(hv, ui) catch |e| std.log.err("ebui render: {}", .{e});
@@ -453,7 +455,8 @@ fn imeRect(ctx: ?*anyopaque, r: geom.Rect) void {
     if (native) |n| n.setImeRect(hv.view, r.x, r.y, r.w, r.h);
 }
 
-fn beginDrag(ctx: ?*anyopaque) void {
+fn beginDrag(ctx: ?*anyopaque) bool {
     const hv: *View = @ptrCast(@alignCast(ctx.?));
-    if (native) |n| n.beginWindowDrag(hv.view);
+    const n = native orelse return false;
+    return n.beginWindowDrag(hv.view);
 }

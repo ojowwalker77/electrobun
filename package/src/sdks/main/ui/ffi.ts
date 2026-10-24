@@ -42,6 +42,7 @@ export const uiSymbols = {
 	ebui_get_value: { args: [u32, u32, ptr], returns: ptr },
 	ebui_get_checked: { args: [u32, u32], returns: bool },
 	ebui_get_rect: { args: [u32, u32, ptr], returns: bool },
+	ebui_watch_rect: { args: [u32, u32, bool], returns: bool },
 	ebui_focus: { args: [u32, u32], returns: v },
 	ebui_scroll_into_view: { args: [u32, u32], returns: v },
 	ebui_set_dark: { args: [u32, bool], returns: v },

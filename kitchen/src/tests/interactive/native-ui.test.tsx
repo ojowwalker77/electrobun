@@ -278,7 +278,7 @@ export const nativeUiInteractiveTests = [
 		interactive: true,
 		timeout: 900000,
 		async run({ log }) {
-			if (!isUIAvailable()) throw new Error("libElectrobunUI not found (set ELECTROBUN_UI_PATH or bundleUI)");
+			if (!isUIAvailable()) throw new Error("libElectrobunUI not found (is bundleWGPU enabled?)");
 			const win = new GpuWindow({ title: "Native UI kitchen sink", frame: { x: 160, y: 90, width: 980, height: 760 } });
 			const ui = createUI(win, { css, components: true });
 			let dark = !!process.env["NATIVE_UI_SINK_DARK"];
