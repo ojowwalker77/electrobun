@@ -9,6 +9,7 @@ pub const inline_layout = @import("inline.zig");
 pub const grid = @import("grid.zig");
 pub const paint = @import("paint.zig");
 pub const sdf = @import("render/sdf.zig");
+pub const raster = @import("raster/path.zig");
 pub const cpu = @import("render/cpu.zig");
 pub const wgpu = @import("render/wgpu.zig");
 pub const gpu = @import("render/gpu.zig");
